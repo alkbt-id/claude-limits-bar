@@ -17,6 +17,7 @@ struct UsageSnapshot: Codable, Equatable {
 enum UsageError: LocalizedError {
     case noCredentials
     case unauthorized
+    case rateLimited(retryAfter: TimeInterval?)
     case http(Int)
     case badResponse
 
@@ -24,6 +25,7 @@ enum UsageError: LocalizedError {
         switch self {
         case .noCredentials: return "Не найден токен Claude Code в связке ключей. Войдите в Claude Code (claude → /login)."
         case .unauthorized: return "Токен истёк. Запустите Claude Code — он обновит токен, и данные вернутся."
+        case .rateLimited: return "API временно ограничил частоту запросов (HTTP 429)."
         case .http(let code): return "Ошибка API: HTTP \(code)"
         case .badResponse: return "Не удалось разобрать ответ API"
         }
@@ -70,6 +72,9 @@ enum UsageAPI {
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw UsageError.badResponse }
         if http.statusCode == 401 || http.statusCode == 403 { throw UsageError.unauthorized }
+        if http.statusCode == 429 {
+            throw UsageError.rateLimited(retryAfter: http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init))
+        }
         guard http.statusCode == 200 else { throw UsageError.http(http.statusCode) }
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw UsageError.badResponse }
 

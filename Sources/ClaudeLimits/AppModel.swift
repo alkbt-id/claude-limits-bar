@@ -18,8 +18,25 @@ final class AppModel: ObservableObject {
     private let scanQueue = DispatchQueue(label: "claude-limits.scan", qos: .utility)
     private var timers: [Timer] = []
 
+    /// After HTTP 429 no requests go out until this moment.
+    private var backoffUntil: Date?
+
     init(store: SampleStore = SampleStore()) {
         self.store = store
+        snapshot = Self.lastKnown(in: store)
+    }
+
+    /// Last recorded poll, so a restart shows numbers right away instead of dashes.
+    private static func lastKnown(in store: SampleStore) -> UsageSnapshot? {
+        guard let s = store.samples.last, Date().timeIntervalSince(s.t) < 30 * 60 else { return nil }
+        let now = Date()
+        func window(_ v: Double?, _ reset: Date?) -> LimitWindow? {
+            guard let v else { return nil }
+            // The window has already reset since that poll: usage starts over.
+            if let reset, reset < now { return LimitWindow(utilization: 0, resetsAt: nil) }
+            return LimitWindow(utilization: v, resetsAt: reset)
+        }
+        return UsageSnapshot(fetchedAt: s.t, fiveHour: window(s.five, s.fiveReset), sevenDay: window(s.week, s.weekReset))
     }
 
     static let pollInterval: TimeInterval = 120
@@ -42,13 +59,25 @@ final class AppModel: ObservableObject {
     }
 
     func refresh() async {
+        now = Date()
+        if let until = backoffUntil, now < until { return }
         loading = true
         defer { loading = false }
         do {
             let snap = try await UsageAPI.fetch()
             snapshot = snap
             error = nil
+            backoffUntil = nil
             store.append(snap)
+        } catch UsageError.rateLimited(let retryAfter) {
+            let until = Date().addingTimeInterval(max(retryAfter ?? 0, Self.pollInterval * 2))
+            backoffUntil = until
+            // Recent numbers are still good enough: wait quietly instead of alarming.
+            if let t = snapshot?.fetchedAt, Date().timeIntervalSince(t) < 15 * 60 {
+                error = nil
+            } else {
+                error = "API временно ограничил частоту запросов (HTTP 429). Повтор в \(Fmt.time.string(from: until))."
+            }
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
