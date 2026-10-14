@@ -78,6 +78,14 @@ final class AppModel: ObservableObject {
             } else {
                 error = "API временно ограничил частоту запросов (HTTP 429). Повтор в \(Fmt.time.string(from: until))."
             }
+        } catch UsageError.unauthorized {
+            // The token lives ~8 h; Claude Code refreshes it the next time it runs.
+            // Keep showing recent numbers and only complain once they get old.
+            if let t = snapshot?.fetchedAt, Date().timeIntervalSince(t) < 15 * 60 {
+                error = nil
+            } else {
+                error = "Токен Claude Code истёк\(snapshot.map { ", данные от \(Fmt.time.string(from: $0.fetchedAt))" } ?? ""). Он обновится, когда Claude Code снова запустится."
+            }
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
