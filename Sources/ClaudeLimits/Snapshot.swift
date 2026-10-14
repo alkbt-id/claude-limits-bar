@@ -29,16 +29,14 @@ enum Snapshot {
             try? await Task.sleep(nanoseconds: 300_000_000)
             save(host, to: dir.appendingPathComponent("panel-\(suffix).png"))
 
-            let title = StatusItemController.title(for: model)
-            let label = NSTextField(labelWithAttributedString: title)
-            label.appearance = NSAppearance(named: appearance)
-            label.sizeToFit()
-            let bar = NSView(frame: NSRect(x: 0, y: 0, width: label.frame.width + 24, height: 24))
+            let img = StatusItemController.image(for: model)
+            let bar = NSView(frame: NSRect(x: 0, y: 0, width: img.size.width + 24, height: 24))
             bar.appearance = NSAppearance(named: appearance)
             bar.wantsLayer = true
             bar.layer?.backgroundColor = (appearance == .aqua ? NSColor(white: 0.93, alpha: 1) : NSColor(white: 0.12, alpha: 1)).cgColor
-            label.frame.origin = NSPoint(x: 12, y: (24 - label.frame.height) / 2)
-            bar.addSubview(label)
+            let iv = NSImageView(frame: NSRect(x: 12, y: 1, width: img.size.width, height: img.size.height))
+            iv.image = img
+            bar.addSubview(iv)
             let w2 = NSWindow(contentRect: bar.frame, styleMask: [.borderless], backing: .buffered, defer: false)
             w2.appearance = NSAppearance(named: appearance)
             w2.contentView = bar
