@@ -29,7 +29,7 @@
 
 ## Откуда данные
 
-- Лимиты — `GET https://api.anthropic.com/api/oauth/usage` с OAuth-токеном Claude Code из связки ключей (`Claude Code-credentials`). Токен читается при каждом опросе (раз в 2 минуты); если он истёк, приложение покажет ⚠︎ — запустите Claude Code, он обновит токен.
+- Лимиты — `GET https://api.anthropic.com/api/oauth/usage` с OAuth-токеном Claude Code из связки ключей (`Claude Code-credentials`). Токен читается при каждом опросе (раз в 2 минуты); если он истёк, приложение показывает последние данные, а предупреждение — только в панели; запустите Claude Code, он обновит токен.
 - История замеров — `~/Library/Application Support/ClaudeLimits/samples.json` (хранится 30 дней).
 - Топ сессий и тепловая карта «Claude Code» — логи `~/.claude/projects/**/*.jsonl`. Расход считается в долларах по ценам API и пересчитывается в долю недельного лимита пропорционально — это оценка, а не точное значение. Чаты на claude.ai в логах не видны.
 
