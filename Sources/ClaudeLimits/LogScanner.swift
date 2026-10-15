@@ -29,6 +29,20 @@ final class LogScanner {
     private let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
     private let lookback: TimeInterval = 8 * 86400
 
+    /// Latest modification time of any transcript. Changes whenever a session starts or writes an event.
+    /// Cheap: reads file metadata only. Call from a background queue.
+    static func lastActivity() -> Date? {
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
+        var latest: Date?
+        if let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) {
+            for case let url as URL in en where url.pathExtension == "jsonl" {
+                guard let m = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else { continue }
+                if latest.map({ m > $0 }) ?? true { latest = m }
+            }
+        }
+        return latest
+    }
+
     /// Rescans changed files only. Call from a background queue.
     func scan() -> [SessionUsage] {
         let fm = FileManager.default

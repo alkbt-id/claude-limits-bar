@@ -39,7 +39,7 @@ struct PopoverView: View {
                 Text("обновлено \(Fmt.time.string(from: t))").font(.caption).foregroundStyle(.secondary)
             }
             Button {
-                Task { await model.refresh() }
+                Task { await model.refresh(force: true) }
                 model.rescanLogs()
             } label: {
                 Image(systemName: "arrow.clockwise")

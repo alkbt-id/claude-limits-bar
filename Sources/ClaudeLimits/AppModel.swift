@@ -43,7 +43,7 @@ final class AppModel: ObservableObject {
     static let scanInterval: TimeInterval = 300
 
     func start() {
-        Task { await refresh() }
+        Task { await refresh(force: true) }
         rescanLogs()
         timers = [
             Timer.scheduledTimer(withTimeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
@@ -58,9 +58,19 @@ final class AppModel: ObservableObject {
         ]
     }
 
-    func refresh() async {
+    /// Claude Code transcript activity as of the last successful poll; nil until one succeeds.
+    private var activityAtFetch: Date?
+    /// Without local activity the API is still polled this often: claude.ai and other machines spend the same limits.
+    static let idlePollInterval: TimeInterval = 30 * 60
+
+    /// `force` polls even when nothing changed locally (start, the refresh button).
+    func refresh(force: Bool = false) async {
         now = Date()
         if let until = backoffUntil, now < until { return }
+        let activity = await withCheckedContinuation { c in
+            scanQueue.async { c.resume(returning: LogScanner.lastActivity()) }
+        }
+        if !force, !needsFetch(activity: activity) { return }
         loading = true
         defer { loading = false }
         do {
@@ -68,6 +78,7 @@ final class AppModel: ObservableObject {
             snapshot = snap
             error = nil
             backoffUntil = nil
+            activityAtFetch = activity ?? .distantPast
             store.append(snap)
         } catch UsageError.rateLimited(let retryAfter) {
             let until = Date().addingTimeInterval(max(retryAfter ?? 0, Self.pollInterval * 2))
@@ -90,6 +101,16 @@ final class AppModel: ObservableObject {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
         now = Date()
+    }
+
+    /// False when no Claude Code session started or wrote an event since the last successful poll,
+    /// no limit window has reset since then, and that poll is not too old.
+    private func needsFetch(activity: Date?) -> Bool {
+        guard let snap = snapshot, let seen = activityAtFetch else { return true }
+        if (activity ?? .distantPast) != seen { return true }
+        if now.timeIntervalSince(snap.fetchedAt) >= Self.idlePollInterval { return true }
+        let resets = [snap.fiveHour?.resetsAt, snap.sevenDay?.resetsAt].compactMap { $0 }
+        return resets.contains { $0 > snap.fetchedAt && $0 <= now }
     }
 
     func rescanLogs() {
