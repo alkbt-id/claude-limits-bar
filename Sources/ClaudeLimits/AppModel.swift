@@ -12,6 +12,14 @@ final class AppModel: ObservableObject {
     @Published var launchAtLogin = LoginItem.isEnabled {
         didSet { LoginItem.setEnabled(launchAtLogin) }
     }
+    /// Plan chosen in the panel; nil follows the plan named in the Claude Code credentials.
+    @Published var planChoice = UserDefaults.standard.string(forKey: "plan").flatMap(Plan.init(rawValue:)) {
+        didSet { if store.isPersistent { UserDefaults.standard.set(planChoice?.rawValue, forKey: "plan") } }
+    }
+    @Published private(set) var detectedPlan = UserDefaults.standard.string(forKey: "detectedPlan").flatMap(Plan.init(rawValue:)) {
+        didSet { if store.isPersistent { UserDefaults.standard.set(detectedPlan?.rawValue, forKey: "detectedPlan") } }
+    }
+    var plan: Plan? { planChoice ?? detectedPlan }
 
     let store: SampleStore
     private let scanner = LogScanner()
@@ -74,7 +82,9 @@ final class AppModel: ObservableObject {
         loading = true
         defer { loading = false }
         do {
-            let snap = try await UsageAPI.fetch()
+            var snap = try await UsageAPI.fetch()
+            if let p = snap.plan, p != detectedPlan { detectedPlan = p }
+            snap.plan = plan
             snapshot = snap
             error = nil
             backoffUntil = nil
@@ -146,6 +156,12 @@ final class AppModel: ObservableObject {
             TopSession(session: s, cost: c,
                        weeklyPercent: weekly.map { total > 0 ? c / total * $0 * ccShare : 0 })
         }
+    }
+
+    /// Recorded limit windows replayed on every plan; nil until the plan is known and a window has usage.
+    var planReport: PlanReport? {
+        guard let plan else { return nil }
+        return PlanReport(history: store.windows, current: plan, now: now)
     }
 
     /// Claude Code cost per epoch hour across all sessions.

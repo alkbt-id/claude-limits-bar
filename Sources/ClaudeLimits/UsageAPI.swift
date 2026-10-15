@@ -12,6 +12,8 @@ struct UsageSnapshot: Codable, Equatable {
     var sevenDay: LimitWindow?
     /// Share of the weekly usage that came from Claude Code (0...1), if the API reports it.
     var claudeCodeShare: Double?
+    /// Plan from the Claude Code credentials, if they name it.
+    var plan: Plan?
 }
 
 enum UsageError: LocalizedError {
@@ -35,9 +37,9 @@ enum UsageError: LocalizedError {
 enum UsageAPI {
     private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
-    /// Reads the OAuth access token that Claude Code keeps in the login keychain.
+    /// Reads the OAuth access token and plan that Claude Code keeps in the login keychain.
     /// Uses /usr/bin/security so the keychain item ACL stays the same as for the CLI.
-    static func readAccessToken() -> String? {
+    static func readCredentials() -> Credentials? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         p.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
@@ -47,23 +49,30 @@ enum UsageAPI {
         do { try p.run() } catch { return nil }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        if p.terminationStatus == 0, let token = parseToken(data) { return token }
+        if p.terminationStatus == 0, let creds = parse(data) { return creds }
 
         // Fallback: credentials file used on some setups.
         let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/.credentials.json")
-        if let d = try? Data(contentsOf: file) { return parseToken(d) }
+        if let d = try? Data(contentsOf: file) { return parse(d) }
         return nil
     }
 
-    private static func parseToken(_ data: Data) -> String? {
+    struct Credentials {
+        var token: String
+        var plan: Plan?
+    }
+
+    private static func parse(_ data: Data) -> Credentials? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let oauth = obj["claudeAiOauth"] as? [String: Any],
               let token = oauth["accessToken"] as? String, !token.isEmpty else { return nil }
-        return token
+        return Credentials(token: token, plan: Plan(tier: oauth["rateLimitTier"] as? String,
+                                                    subscription: oauth["subscriptionType"] as? String))
     }
 
     static func fetch() async throws -> UsageSnapshot {
-        guard let token = readAccessToken() else { throw UsageError.noCredentials }
+        guard let creds = readCredentials() else { throw UsageError.noCredentials }
+        let token = creds.token
         var req = URLRequest(url: endpoint, timeoutInterval: 20)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
@@ -87,7 +96,8 @@ enum UsageAPI {
         return UsageSnapshot(fetchedAt: Date(),
                              fiveHour: window(obj["five_hour"]),
                              sevenDay: window(obj["seven_day"]),
-                             claudeCodeShare: share)
+                             claudeCodeShare: share,
+                             plan: creds.plan)
     }
 
     private static func window(_ any: Any?) -> LimitWindow? {

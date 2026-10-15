@@ -18,6 +18,7 @@ struct PopoverView: View {
                         LimitCard(title: "5 часов", window: model.snapshot?.fiveHour, now: model.now)
                         LimitCard(title: "Неделя", window: model.snapshot?.sevenDay, now: model.now)
                     }
+                    Section("Какой тариф нужен") { PlanFitView() }
                     Section("Лимиты за 7 дней") { HistoryChart() }
                     Section("Когда расходовался лимит") { HeatmapView() }
                     Section("Топ сессий за текущую неделю") { TopSessionsView() }
@@ -95,6 +96,141 @@ private struct LimitCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+    }
+}
+
+// MARK: - Plan fit: recorded windows replayed on Pro / Max 5x / Max 20x
+
+private struct PlanFitView: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Ваш тариф").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $model.planChoice) {
+                    Text("Авто" + (model.detectedPlan.map { " (\($0.title))" } ?? "")).tag(Plan?.none)
+                    ForEach(Plan.allCases) { Text($0.title).tag(Plan?.some($0)) }
+                }
+                .labelsHidden().pickerStyle(.menu).fixedSize()
+                Spacer()
+            }
+            if model.plan == nil {
+                Text("Тариф не определился по токену Claude Code — выберите его, чтобы сравнить.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let r = model.planReport {
+                Text(verdict(r)).font(.callout.bold()).fixedSize(horizontal: false, vertical: true)
+                track(r)
+                VStack(spacing: 4) { ForEach(r.fits) { row($0, r) } }
+                Text(caption(r)).font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Статистика копится: нужен хотя бы один замер с расходом лимита.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Marker position 0...1: segment of the cheapest plan that fits, offset by how full it would be.
+    private func position(_ r: PlanReport, upper: Bool) -> Double {
+        let n = Double(r.fits.count)
+        for (i, f) in r.fits.enumerated() {
+            let w = upper ? f.worst.upperBound : f.worst.lowerBound
+            if f.fiveOver == 0, w < 100 { return (Double(i) + w / 100) / n }
+        }
+        return 1
+    }
+
+    private func track(_ r: PlanReport) -> some View {
+        let lo = position(r, upper: false), hi = position(r, upper: true)
+        // Color by how full the marker's own plan would be; past the last plan it is red.
+        let seg = hi * Double(r.fits.count)
+        let color = Palette.color(hi >= 1 ? 1 : seg - seg.rounded(.down))
+        return VStack(spacing: 4) {
+            GeometryReader { g in
+                let w = g.size.width
+                ZStack(alignment: .leading) {
+                    HStack(spacing: 3) {
+                        ForEach(Plan.allCases) { p in
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(LinearGradient(colors: [0, 0.5, 1].map { Palette.color($0).opacity(0.3) },
+                                                     startPoint: .leading, endPoint: .trailing))
+                                .overlay(RoundedRectangle(cornerRadius: 4)
+                                    .stroke(p == r.current ? Color.primary.opacity(0.6) : .clear, lineWidth: 1.5))
+                        }
+                    }
+                    .frame(height: 10)
+                    if hi - lo > 0.005 {
+                        Capsule().fill(color.opacity(0.45))
+                            .frame(width: (hi - lo) * w, height: 6)
+                            .offset(x: lo * w)
+                    }
+                    Circle().fill(color)
+                        .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 2))
+                        .frame(width: 16, height: 16)
+                        .offset(x: min(max(hi * w - 8, 0), w - 16))
+                }
+            }
+            .frame(height: 16)
+            HStack(spacing: 3) {
+                ForEach(Plan.allCases) { p in
+                    Text("\(p.title) · $\(p.price)")
+                        .font(.caption2.weight(p == r.current ? .bold : .regular))
+                        .foregroundStyle(p == r.current ? .primary : .secondary)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+    }
+
+    private func row(_ f: PlanReport.Fit, _ r: PlanReport) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: f.fits ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundStyle(f.fits ? Palette.color(0) : Palette.color(1))
+            Text(f.plan.title + (f.plan == r.current ? " · сейчас" : ""))
+                .font(.caption.weight(f.plan == r.current ? .bold : .regular))
+            Spacer()
+            Group {
+                if f.fiveOver > 0 {
+                    Text("5ч: упор в \(f.fiveOver) из \(r.fiveWindows)").foregroundStyle(Palette.color(1))
+                } else {
+                    Text("5ч: пик \(pct(f.fiveWorst))").foregroundStyle(Palette.color(f.fiveWorst / 100))
+                }
+                Text("неделя: \(pct(f.week))").foregroundStyle(Palette.color(f.week.upperBound / 100))
+                    .frame(width: 118, alignment: .trailing)
+            }
+            .font(.caption.monospacedDigit())
+        }
+    }
+
+    private func verdict(_ r: PlanReport) -> String {
+        guard let best = r.cheapest else { return "Не хватает даже Max 20x" }
+        let maybe = r.fits.first { $0.fiveOver == 0 && $0.week.lowerBound < 100 }?.plan
+        var text: String
+        if best.price < r.current.price {
+            text = "Хватило бы \(best.title) — экономия $\(r.current.price - best.price) в месяц"
+        } else if best == r.current {
+            text = "Текущий тариф — самый дешёвый из подходящих"
+        } else {
+            text = "По замерам нужен \(best.title)"
+        }
+        if let maybe, maybe.price < best.price {
+            text += ". Возможно, хватит и \(maybe.title): зависит от недельного лимита, его Anthropic не публикует"
+        }
+        return text
+    }
+
+    private func caption(_ r: PlanReport) -> String {
+        var parts = ["За \(r.days) дн.: окон по 5 ч — \(r.fiveWindows), недель — \(r.weeks)."]
+        if r.completedWeeks == 0 { parts.append("Ни одна неделя ещё не закончилась — недельный расход может вырасти.") }
+        if r.capped { parts.append("Лимит доходил до 100% — реальная потребность выше, чем видно по замерам.") }
+        parts.append("Окно 5 ч у Max ровно ×5 и ×20 от Pro. Недельное соотношение не публикуется: для Max 20x взято 10–20× Pro, отсюда диапазон.")
+        return parts.joined(separator: " ")
+    }
+
+    private func pct(_ v: Double) -> String { v >= 10 ? "\(Int(v.rounded()))%" : String(format: "%.1f%%", v) }
+    private func pct(_ r: ClosedRange<Double>) -> String {
+        r.upperBound - r.lowerBound < 0.5 ? pct(r.upperBound) : "\(pct(r.lowerBound))–\(pct(r.upperBound))"
     }
 }
 
