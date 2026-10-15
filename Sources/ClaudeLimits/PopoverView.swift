@@ -8,7 +8,7 @@ struct PopoverView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
                     if let err = model.error {
                         Label(err, systemImage: "exclamationmark.triangle.fill")
                             .font(.callout).foregroundStyle(.orange)
@@ -18,9 +18,8 @@ struct PopoverView: View {
                         LimitCard(title: "5 часов", window: model.snapshot?.fiveHour, now: model.now)
                         LimitCard(title: "Неделя", window: model.snapshot?.sevenDay, now: model.now)
                     }
-                    Section("Какой тариф нужен") { PlanFitView() }
-                    Section("Лимиты за 7 дней") { HistoryChart() }
-                    Section("Когда расходовался лимит") { HeatmapView() }
+                    Section("Какой тариф нужен") { PlanFitView() } trailing: { PlanPicker() }
+                    UsageTabs()
                     Section("Топ сессий за текущую неделю") { TopSessionsView() }
                 }
                 .padding(16)
@@ -52,18 +51,31 @@ struct PopoverView: View {
     }
 }
 
-private struct Section<Content: View>: View {
+/// Titled block; `trailing` sits on the title line (a picker) to save a row.
+private struct Section<Content: View, Trailing: View>: View {
     let title: String
-    @ViewBuilder let content: Content
-    init(_ title: String, @ViewBuilder content: () -> Content) {
+    let content: Content
+    let trailing: Trailing
+    init(_ title: String, @ViewBuilder content: () -> Content, @ViewBuilder trailing: () -> Trailing) {
         self.title = title
         self.content = content()
+        self.trailing = trailing()
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title).font(.headline)
+                Spacer()
+                trailing
+            }
             content
         }
+    }
+}
+
+extension Section where Trailing == EmptyView {
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.init(title, content: content, trailing: { EmptyView() })
     }
 }
 
@@ -76,24 +88,33 @@ private struct LimitCard: View {
 
     var body: some View {
         let frac = (window?.utilization ?? 0) / 100
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.subheadline).foregroundStyle(.secondary)
-            Text(Fmt.percent(window?.utilization))
-                .font(.system(size: 30, weight: .bold, design: .rounded).monospacedDigit())
-                .foregroundStyle(window == nil ? Color.secondary : Palette.color(frac))
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.subheadline).foregroundStyle(.secondary)
+                Spacer()
+                Text(Fmt.percent(window?.utilization))
+                    .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(window == nil ? Color.secondary : Palette.color(frac))
+            }
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.secondary.opacity(0.15))
                     Capsule().fill(Palette.color(frac)).frame(width: max(4, g.size.width * min(frac, 1)))
                 }
             }
-            .frame(height: 6)
+            .frame(height: 4)
             if let r = window?.resetsAt {
-                Text("сброс через \(Fmt.countdown(to: r, now: now)) · \(Fmt.resetAt(r, now: now))")
-                    .font(.caption).foregroundStyle(.secondary)
+                // One line when it fits, otherwise the reset time drops to a second line.
+                let countdown = Text("сброс через \(Fmt.countdown(to: r, now: now))")
+                let at = Text(Fmt.resetAt(r, now: now))
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 4) { countdown; Spacer(minLength: 0); at }.fixedSize(horizontal: true, vertical: false)
+                    VStack(alignment: .leading, spacing: 1) { countdown; at }
+                }
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
-        .padding(12)
+        .padding(.horizontal, 10).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
     }
@@ -101,27 +122,31 @@ private struct LimitCard: View {
 
 // MARK: - Plan fit: recorded windows replayed on Pro / Max 5x / Max 20x
 
+private struct PlanPicker: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Picker("", selection: $model.planChoice) {
+            Text("Авто" + (model.detectedPlan.map { " (\($0.title))" } ?? "")).tag(Plan?.none)
+            ForEach(Plan.allCases) { Text($0.title).tag(Plan?.some($0)) }
+        }
+        .labelsHidden().pickerStyle(.menu).controlSize(.small).fixedSize()
+        .help("Ваш тариф")
+    }
+}
+
 private struct PlanFitView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Ваш тариф").font(.caption).foregroundStyle(.secondary)
-                Picker("", selection: $model.planChoice) {
-                    Text("Авто" + (model.detectedPlan.map { " (\($0.title))" } ?? "")).tag(Plan?.none)
-                    ForEach(Plan.allCases) { Text($0.title).tag(Plan?.some($0)) }
-                }
-                .labelsHidden().pickerStyle(.menu).fixedSize()
-                Spacer()
-            }
+        VStack(alignment: .leading, spacing: 6) {
             if model.plan == nil {
                 Text("Тариф не определился по токену Claude Code — выберите его, чтобы сравнить.")
                     .font(.caption).foregroundStyle(.secondary)
             } else if let r = model.planReport {
                 Text(verdict(r)).font(.callout.bold()).fixedSize(horizontal: false, vertical: true)
                 track(r)
-                VStack(spacing: 4) { ForEach(r.fits) { row($0, r) } }
+                VStack(spacing: 2) { ForEach(r.fits) { row($0, r) } }
                 Text(caption(r)).font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -198,6 +223,7 @@ private struct PlanFitView: View {
                 }
                 Text("неделя: \(pct(f.week))").foregroundStyle(Palette.color(f.week.upperBound / 100))
                     .frame(width: 118, alignment: .trailing)
+                    .help("Недельное соотношение тарифов не публикуется: для Max 20x взято 10–20× Pro, отсюда диапазон")
             }
             .font(.caption.monospacedDigit())
         }
@@ -221,16 +247,40 @@ private struct PlanFitView: View {
     }
 
     private func caption(_ r: PlanReport) -> String {
-        var parts = ["За \(r.days) дн.: окон по 5 ч — \(r.fiveWindows), недель — \(r.weeks)."]
-        if r.completedWeeks == 0 { parts.append("Ни одна неделя ещё не закончилась — недельный расход может вырасти.") }
-        if r.capped { parts.append("Лимит доходил до 100% — реальная потребность выше, чем видно по замерам.") }
-        parts.append("Окно 5 ч у Max ровно ×5 и ×20 от Pro. Недельное соотношение не публикуется: для Max 20x взято 10–20× Pro, отсюда диапазон.")
-        return parts.joined(separator: " ")
+        var text = "Период: \(Fmt.day.string(from: r.from)) – \(Fmt.day.string(from: model.now))"
+        if r.capped { text += ". Лимит доходил до 100% — реальная потребность выше" }
+        return text
     }
 
     private func pct(_ v: Double) -> String { v >= 10 ? "\(Int(v.rounded()))%" : String(format: "%.1f%%", v) }
     private func pct(_ r: ClosedRange<Double>) -> String {
         r.upperBound - r.lowerBound < 0.5 ? pct(r.upperBound) : "\(pct(r.lowerBound))–\(pct(r.upperBound))"
+    }
+}
+
+// MARK: - 7-day usage: Claude Code heatmap or limits line chart
+
+private struct UsageTabs: View {
+    @AppStorage("usageTab") private var tab = Tab.claudeCode
+
+    enum Tab: String, CaseIterable, Identifiable {
+        case claudeCode, limits
+        var id: String { rawValue }
+        var title: String { self == .claudeCode ? "Claude Code" : "Лимиты" }
+    }
+
+    var body: some View {
+        Section("Расход за 7 дней") {
+            switch tab {
+            case .claudeCode: HeatmapView()
+            case .limits: HistoryChart()
+            }
+        } trailing: {
+            Picker("", selection: $tab) {
+                ForEach(Tab.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
+        }
     }
 }
 
@@ -258,13 +308,16 @@ private struct HistoryChart: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
         } else {
+            // Scale to the peak with ~10% headroom, rounded to a step whose half is a whole number.
+            let peak = points.map(\.v).max() ?? 0
+            let top = [10.0, 20, 40, 60, 80].first { $0 >= peak * 1.1 } ?? 100
             Chart(points) { p in
                 LineMark(x: .value("Время", p.t), y: .value("%", p.v))
                     .foregroundStyle(by: .value("Лимит", p.series))
                     .interpolationMethod(.stepEnd)
             }
             .chartForegroundStyleScale(["5 часов": Color.blue, "Неделя": Color.purple])
-            .chartYScale(domain: 0...100)
+            .chartYScale(domain: 0...top)
             .chartXScale(domain: start...model.now)
             .chartXAxis {
                 AxisMarks(values: .stride(by: .day)) { v in
@@ -272,29 +325,16 @@ private struct HistoryChart: View {
                     AxisValueLabel { if let d = v.as(Date.self) { Text(Fmt.weekday.string(from: d)) } }
                 }
             }
-            .chartYAxis { AxisMarks(values: [0, 50, 100]) { v in AxisGridLine(); AxisValueLabel("\(v.as(Int.self) ?? 0)%") } }
-            .frame(height: 150)
+            .chartYAxis { AxisMarks(values: [0, top / 2, top]) { v in AxisGridLine(); AxisValueLabel("\(Int(v.as(Double.self) ?? 0))%") } }
+            .frame(height: 120)
         }
     }
 }
 
-// MARK: - Heatmap 7 days × 24 hours
+// MARK: - Heatmap 7 days × 24 hours of Claude Code spend
 
 private struct HeatmapView: View {
     @EnvironmentObject var model: AppModel
-    @AppStorage("heatmapSource") private var source = Source.claudeCode
-
-    enum Source: String, CaseIterable, Identifiable {
-        case claudeCode, fiveHour, weekly
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .claudeCode: return "Claude Code"
-            case .fiveHour: return "Лимит 5ч"
-            case .weekly: return "Лимит недели"
-            }
-        }
-    }
 
     private let cell: CGFloat = 14
     private let gap: CGFloat = 2
@@ -304,16 +344,10 @@ private struct HeatmapView: View {
         let today = cal.startOfDay(for: model.now)
         let days = (0..<7).reversed().compactMap { cal.date(byAdding: .day, value: -$0, to: today) }
         let start = days.first!
-        let values = data(since: start)
+        let values = model.logHourly(since: start)
         let maxV = values.values.max() ?? 0
 
         VStack(alignment: .leading, spacing: 8) {
-            Picker("", selection: $source) {
-                ForEach(Source.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
             VStack(alignment: .leading, spacing: gap) {
                 HStack(spacing: gap) {
                     Text("").frame(width: 44)
@@ -342,7 +376,7 @@ private struct HeatmapView: View {
             }
 
             HStack(spacing: 6) {
-                Text(caption).font(.caption).foregroundStyle(.secondary)
+                Text("По логам Claude Code, в $ по ценам API").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Text("мало").font(.caption2).foregroundStyle(.secondary)
                 LinearGradient(colors: [0, 0.5, 1].map { Palette.color($0) }, startPoint: .leading, endPoint: .trailing)
@@ -352,25 +386,8 @@ private struct HeatmapView: View {
         }
     }
 
-    private func data(since start: Date) -> [Int: Double] {
-        switch source {
-        case .claudeCode: return model.logHourly(since: start)
-        case .fiveHour: return model.store.hourlyConsumption(since: start, weekly: false)
-        case .weekly: return model.store.hourlyConsumption(since: start, weekly: true)
-        }
-    }
-
-    private var caption: String {
-        switch source {
-        case .claudeCode: return "По логам Claude Code, в $ по ценам API"
-        case .fiveHour: return "Прирост 5-часового лимита, % за час"
-        case .weekly: return "Прирост недельного лимита, % за час"
-        }
-    }
-
     private func label(_ v: Double) -> String {
-        if v <= 0 { return "нет расхода" }
-        return source == .claudeCode ? String(format: "≈$%.2f", v) : String(format: "+%.1f%%", v)
+        v <= 0 ? "нет расхода" : String(format: "≈$%.2f", v)
     }
 
     private func fill(_ v: Double, max m: Double, future: Bool) -> Color {

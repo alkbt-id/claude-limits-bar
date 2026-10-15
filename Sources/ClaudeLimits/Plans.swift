@@ -92,11 +92,9 @@ struct PlanReport {
     }
 
     let current: Plan
-    let days: Int
+    /// Earliest recorded window in the period: the stats cover `from...now`.
+    let from: Date
     let fiveWindows: Int
-    let weeks: Int
-    /// Weeks whose window has already reset: an ongoing week can still grow.
-    let completedWeeks: Int
     let fits: [Fit]
     /// A limit hit 100% on the plan it was recorded on: real need is above what the data shows.
     let capped: Bool
@@ -108,12 +106,9 @@ struct PlanReport {
         let five = history.five.filter { $0.last >= start && $0.peak > 0 }
         let week = history.week.filter { $0.last >= start && $0.peak > 0 }
         guard !five.isEmpty || !week.isEmpty else { return nil }
-        let first = (five + week).map { $0.last }.min() ?? now
         self.current = current
-        days = max(1, Int((now.timeIntervalSince(first) / 86400).rounded(.up)))
+        from = (five + week).map { $0.last }.min() ?? now
         fiveWindows = five.count
-        weeks = week.count
-        completedWeeks = week.filter { $0.reset <= now }.count
         capped = (five + week).contains { $0.peak >= 100 }
         fits = Plan.allCases.map { plan in
             let f = five.map { plan.session($0.peak, from: $0.plan ?? current) }

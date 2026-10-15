@@ -82,25 +82,6 @@ final class SampleStore {
 
     func since(_ date: Date) -> [Sample] { samples.filter { $0.t >= date } }
 
-    /// Limit consumption per hour: sum of positive utilization steps between consecutive polls.
-    /// A new reset time means a new window, so the new value counts in full.
-    func hourlyConsumption(since start: Date, weekly: Bool) -> [Int: Double] {
-        var out: [Int: Double] = [:]
-        let s = samples
-        guard s.count > 1 else { return out }
-        for i in 1..<s.count where s[i].t >= start {
-            let a = s[i - 1], b = s[i]
-            guard let vb = weekly ? b.week : b.five else { continue }
-            let va = weekly ? a.week : a.five
-            let sameWindow = Self.sameReset(weekly ? a.weekReset : a.fiveReset, weekly ? b.weekReset : b.fiveReset)
-            // Polls more than 6h apart (sleep, app off) can't be attributed to an hour reliably.
-            guard b.t.timeIntervalSince(a.t) < 6 * 3600 else { continue }
-            let delta = sameWindow ? vb - (va ?? vb) : vb
-            if delta > 0 { out[Int(b.t.timeIntervalSince1970 / 3600), default: 0] += delta }
-        }
-        return out
-    }
-
     private static func sameReset(_ a: Date?, _ b: Date?) -> Bool {
         guard let a, let b else { return true }
         return abs(a.timeIntervalSince(b)) < 120

@@ -61,6 +61,13 @@ enum Fmt {
         return f
     }()
 
+    static let day: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ru_RU")
+        f.dateFormat = "d MMM"
+        return f
+    }()
+
     static let weekday: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "ru_RU")
