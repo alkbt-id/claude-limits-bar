@@ -39,10 +39,7 @@ final class AppModel: ObservableObject {
         guard let s = store.samples.last, Date().timeIntervalSince(s.t) < 30 * 60 else { return nil }
         let now = Date()
         func window(_ v: Double?, _ reset: Date?) -> LimitWindow? {
-            guard let v else { return nil }
-            // The window has already reset since that poll: usage starts over.
-            if let reset, reset < now { return LimitWindow(utilization: 0, resetsAt: nil) }
-            return LimitWindow(utilization: v, resetsAt: reset)
+            v.map { LimitWindow(utilization: $0, resetsAt: reset).current(at: now) }
         }
         return UsageSnapshot(fetchedAt: s.t, fiveHour: window(s.five, s.fiveReset), sevenDay: window(s.week, s.weekReset))
     }
@@ -51,6 +48,8 @@ final class AppModel: ObservableObject {
     static let scanInterval: TimeInterval = 300
 
     func start() {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        Log.write("start v\(v), plan \(plan?.rawValue ?? "unknown"), last data \(snapshot.map { Fmt.time.string(from: $0.fetchedAt) } ?? "none")")
         Task { await refresh(force: true) }
         rescanLogs()
         timers = [
@@ -78,7 +77,9 @@ final class AppModel: ObservableObject {
         let activity = await withCheckedContinuation { c in
             scanQueue.async { c.resume(returning: LogScanner.lastActivity()) }
         }
-        if !force, !needsFetch(activity: activity) { return }
+        let reason = force ? "forced" : fetchReason(activity: activity)
+        guard let reason else { return }
+        Log.write("fetch (\(reason))")
         loading = true
         defer { loading = false }
         do {
@@ -90,16 +91,19 @@ final class AppModel: ObservableObject {
             backoffUntil = nil
             activityAtFetch = activity ?? .distantPast
             store.append(snap)
+            Log.write("ok: 5h \(Fmt.percent(snap.fiveHour?.utilization)) reset \(Self.stamp(snap.fiveHour?.resetsAt)), week \(Fmt.percent(snap.sevenDay?.utilization)) reset \(Self.stamp(snap.sevenDay?.resetsAt)), cc share \(snap.claudeCodeShare.map { String(format: "%.2f", $0) } ?? "-")")
         } catch UsageError.rateLimited(let retryAfter) {
             let until = Date().addingTimeInterval(max(retryAfter ?? 0, Self.pollInterval * 2))
             backoffUntil = until
+            Log.write("429: Retry-After \(retryAfter.map { "\(Int($0))s" } ?? "none"), backoff until \(Fmt.time.string(from: until))")
             // Recent numbers are still good enough: wait quietly instead of alarming.
             if let t = snapshot?.fetchedAt, Date().timeIntervalSince(t) < 15 * 60 {
                 error = nil
             } else {
-                error = "API временно ограничил частоту запросов (HTTP 429). Повтор в \(Fmt.time.string(from: until))."
+                error = "API временно ограничил частоту запросов (HTTP 429)\(snapshot.map { ", данные от \(Fmt.time.string(from: $0.fetchedAt))" } ?? ""). Повтор в \(Fmt.time.string(from: until))."
             }
         } catch UsageError.unauthorized {
+            Log.write("unauthorized: token expired or rejected")
             // The token lives ~8 h; Claude Code refreshes it the next time it runs.
             // Keep showing recent numbers and only complain once they get old.
             if let t = snapshot?.fetchedAt, Date().timeIntervalSince(t) < 15 * 60 {
@@ -108,24 +112,29 @@ final class AppModel: ObservableObject {
                 error = "Токен Claude Code истёк\(snapshot.map { ", данные от \(Fmt.time.string(from: $0.fetchedAt))" } ?? ""). Он обновится, когда Claude Code снова запустится."
             }
         } catch {
+            Log.write("error: \(error)")
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
         now = Date()
     }
 
-    /// False when no Claude Code session started or wrote an event since the last successful poll,
-    /// no limit window has reset since then, and that poll is not too old.
-    private func needsFetch(activity: Date?) -> Bool {
-        guard let snap = snapshot, let seen = activityAtFetch else { return true }
-        if (activity ?? .distantPast) != seen { return true }
-        if now.timeIntervalSince(snap.fetchedAt) >= Self.idlePollInterval { return true }
+    /// Why a poll is due, or nil when no Claude Code session started or wrote an event since the last
+    /// successful poll, no limit window has reset since then, and that poll is not too old.
+    private func fetchReason(activity: Date?) -> String? {
+        guard let snap = snapshot else { return "no data" }
+        guard let seen = activityAtFetch else { return "first poll" }
+        if (activity ?? .distantPast) != seen { return "new activity" }
+        if now.timeIntervalSince(snap.fetchedAt) >= Self.idlePollInterval { return "idle timeout" }
         let resets = [snap.fiveHour?.resetsAt, snap.sevenDay?.resetsAt].compactMap { $0 }
-        return resets.contains { $0 > snap.fetchedAt && $0 <= now }
+        return resets.contains { $0 > snap.fetchedAt && $0 <= now } ? "window reset" : nil
     }
+
+    private static func stamp(_ d: Date?) -> String { d.map { Fmt.dayTime.string(from: $0) } ?? "-" }
 
     func rescanLogs() {
         scanQueue.async { [scanner] in
             let result = scanner.scan()
+            Log.write("log scan: \(result.count) sessions")
             Task { @MainActor in self.sessions = result }
         }
     }

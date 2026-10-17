@@ -58,7 +58,7 @@ final class StatusItemController: NSObject {
         let gray = NSColor.secondaryLabelColor
 
         // Columns: label | percent (right-aligned, fixed width) | time to reset.
-        let rows = [("5ч", s?.fiveHour, CGFloat(12)), ("7д", s?.sevenDay, CGFloat(2))].map { label, w, baseline in
+        let rows = [("5ч", s?.fiveHour, CGFloat(12)), ("7д", s?.sevenDay, CGFloat(2))].map { ($0.0, $0.1?.current(at: model.now), $0.2) }.map { label, w, baseline in
             let color: NSColor = w.map { Palette.nsColor($0.utilization / 100) } ?? gray
             let time = w?.resetsAt != nil ? Fmt.countdown(to: w?.resetsAt, now: model.now) : ""
             return (NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: gray]),

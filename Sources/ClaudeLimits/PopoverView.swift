@@ -87,12 +87,13 @@ private struct LimitCard: View {
     let now: Date
 
     var body: some View {
-        let frac = (window?.utilization ?? 0) / 100
+        let shown = window?.current(at: now)
+        let frac = (shown?.utilization ?? 0) / 100
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.subheadline).foregroundStyle(.secondary)
                 Spacer()
-                Text(Fmt.percent(window?.utilization))
+                Text(Fmt.percent(shown?.utilization))
                     .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
                     .foregroundStyle(window == nil ? Color.secondary : Palette.color(frac))
             }
@@ -103,7 +104,10 @@ private struct LimitCard: View {
                 }
             }
             .frame(height: 4)
-            if let r = window?.resetsAt {
+            if let r = window?.resetsAt, r <= now {
+                // Reset passed since the last poll: the old numbers no longer apply.
+                Text("сброшен \(Fmt.resetAt(r, now: now))").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            } else if let r = window?.resetsAt {
                 // One line when it fits, otherwise the reset time drops to a second line.
                 let countdown = Text("сброс через \(Fmt.countdown(to: r, now: now))")
                 let at = Text(Fmt.resetAt(r, now: now))

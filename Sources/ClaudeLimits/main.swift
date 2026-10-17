@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Refresh right after wake: timers drift while the Mac sleeps.
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Log.write("wake")
             Task { @MainActor in
                 await self?.model.refresh()
                 self?.model.rescanLogs()
@@ -22,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 MainActor.assumeIsolated {
     let args = CommandLine.arguments
     if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
+        Log.enabled = false
         _ = NSApplication.shared
         Task {
             await Snapshot.run(to: URL(fileURLWithPath: args[i + 1]), demo: args.contains("--demo"))

@@ -4,6 +4,12 @@ import Foundation
 struct LimitWindow: Codable, Equatable {
     var utilization: Double      // 0...100
     var resetsAt: Date?
+
+    /// The window as of `now`: once its reset time has passed, usage starts over.
+    func current(at now: Date) -> LimitWindow {
+        if let r = resetsAt, r <= now { return LimitWindow(utilization: 0, resetsAt: nil) }
+        return self
+    }
 }
 
 struct UsageSnapshot: Codable, Equatable {
@@ -71,7 +77,10 @@ enum UsageAPI {
     }
 
     static func fetch() async throws -> UsageSnapshot {
-        guard let creds = readCredentials() else { throw UsageError.noCredentials }
+        guard let creds = readCredentials() else {
+            Log.write("no credentials in keychain or ~/.claude/.credentials.json")
+            throw UsageError.noCredentials
+        }
         let token = creds.token
         var req = URLRequest(url: endpoint, timeoutInterval: 20)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -80,6 +89,10 @@ enum UsageAPI {
 
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw UsageError.badResponse }
+        if http.statusCode != 200 {
+            let body = String(decoding: data.prefix(300), as: UTF8.self).replacingOccurrences(of: "\n", with: " ")
+            Log.write("HTTP \(http.statusCode), Retry-After \(http.value(forHTTPHeaderField: "Retry-After") ?? "none"), body: \(body)")
+        }
         if http.statusCode == 401 || http.statusCode == 403 { throw UsageError.unauthorized }
         if http.statusCode == 429 {
             throw UsageError.rateLimited(retryAfter: http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init))
