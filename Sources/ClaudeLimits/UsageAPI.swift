@@ -24,7 +24,7 @@ struct UsageSnapshot: Codable, Equatable {
 
 enum UsageError: LocalizedError {
     case noCredentials
-    case unauthorized
+    case unauthorized(token: String)
     case rateLimited(retryAfter: TimeInterval?)
     case http(Int)
     case badResponse
@@ -93,7 +93,7 @@ enum UsageAPI {
             let body = String(decoding: data.prefix(300), as: UTF8.self).replacingOccurrences(of: "\n", with: " ")
             Log.write("HTTP \(http.statusCode), Retry-After \(http.value(forHTTPHeaderField: "Retry-After") ?? "none"), body: \(body)")
         }
-        if http.statusCode == 401 || http.statusCode == 403 { throw UsageError.unauthorized }
+        if http.statusCode == 401 || http.statusCode == 403 { throw UsageError.unauthorized(token: token) }
         if http.statusCode == 429 {
             throw UsageError.rateLimited(retryAfter: http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init))
         }

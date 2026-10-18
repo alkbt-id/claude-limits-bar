@@ -28,6 +28,8 @@ final class AppModel: ObservableObject {
 
     /// After HTTP 429 no requests go out until this moment.
     private var backoffUntil: Date?
+    /// Token the API rejected with 401: no polls until Claude Code puts a new one in the keychain.
+    private var rejectedToken: String?
 
     init(store: SampleStore = SampleStore()) {
         self.store = store
@@ -74,10 +76,16 @@ final class AppModel: ObservableObject {
     func refresh(force: Bool = false) async {
         now = Date()
         if let until = backoffUntil, now < until { return }
+        var tokenChanged = false
+        if let rejected = rejectedToken {
+            let current = await Task.detached { UsageAPI.readCredentials()?.token }.value
+            if current == rejected, !force { return }
+            tokenChanged = current != rejected
+        }
         let activity = await withCheckedContinuation { c in
             scanQueue.async { c.resume(returning: LogScanner.lastActivity()) }
         }
-        let reason = force ? "forced" : fetchReason(activity: activity)
+        let reason = force ? "forced" : tokenChanged ? "new token" : fetchReason(activity: activity)
         guard let reason else { return }
         Log.write("fetch (\(reason))")
         loading = true
@@ -89,6 +97,7 @@ final class AppModel: ObservableObject {
             snapshot = snap
             error = nil
             backoffUntil = nil
+            rejectedToken = nil
             activityAtFetch = activity ?? .distantPast
             store.append(snap)
             Log.write("ok: 5h \(Fmt.percent(snap.fiveHour?.utilization)) reset \(Self.stamp(snap.fiveHour?.resetsAt)), week \(Fmt.percent(snap.sevenDay?.utilization)) reset \(Self.stamp(snap.sevenDay?.resetsAt)), cc share \(snap.claudeCodeShare.map { String(format: "%.2f", $0) } ?? "-")")
@@ -102,8 +111,9 @@ final class AppModel: ObservableObject {
             } else {
                 error = "API временно ограничил частоту запросов (HTTP 429)\(snapshot.map { ", данные от \(Fmt.time.string(from: $0.fetchedAt))" } ?? ""). Повтор в \(Fmt.time.string(from: until))."
             }
-        } catch UsageError.unauthorized {
-            Log.write("unauthorized: token expired or rejected")
+        } catch UsageError.unauthorized(let token) {
+            rejectedToken = token
+            Log.write("unauthorized: token expired or rejected, waiting for a new one in the keychain")
             // The token lives ~8 h; Claude Code refreshes it the next time it runs.
             // Keep showing recent numbers and only complain once they get old.
             if let t = snapshot?.fetchedAt, Date().timeIntervalSince(t) < 15 * 60 {
