@@ -4,7 +4,7 @@ import Combine
 
 /// Menu bar item: "5ч 42% 11:49" over "7д 8% Пн 20:59" in two small lines, percent colored by how much of the limit is spent.
 /// While Claude Code sessions run, a column on the left shows ▶2 (working) over 🔔1 (waiting for you),
-/// or over the number of all sessions in gray when none waits.
+/// or over the number of the rest (idle, already seen) in gray when none waits.
 @MainActor
 final class StatusItemController: NSObject {
     private let model: AppModel
@@ -77,13 +77,13 @@ final class StatusItemController: NSObject {
         let valueWidth = ceil(("100%" as NSString).size(withAttributes: [.font: valueFont]).width)
         let timeWidth = ceil(rows.map { $0.2.size().width }.max() ?? 0)
         // Sessions column, only while sessions run: working over waiting for you,
-        // or over the number of all sessions in gray when none waits.
+        // or over the rest (idle, already seen) in gray when none waits.
         let sessions: [(NSAttributedString, CGFloat)] = model.live.isEmpty ? [] : {
             let n = model.attentionCount
             let w = model.workingCount
             return [(Self.counter("play.fill", w, color: w > 0 ? .systemGreen : .tertiaryLabelColor, font: valueFont), 12),
                     (n > 0 ? Self.counter("bell.fill", n, color: .systemOrange, font: valueFont)
-                           : Self.counter("checkmark", model.live.count, color: gray, font: valueFont), 2)]
+                           : Self.counter("checkmark", model.live.count - w, color: gray, font: valueFont), 2)]
         }()
         let sessionsWidth = ceil(sessions.map { $0.0.size().width }.max() ?? 0)
         let x0 = sessionsWidth > 0 ? sessionsWidth + 6 : 0
