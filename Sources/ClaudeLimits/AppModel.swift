@@ -9,6 +9,12 @@ final class AppModel: ObservableObject {
     @Published var now = Date()
     @Published var loading = false
     @Published var copiedSession: String?
+    /// Running Claude Code sessions, rescanned every few seconds.
+    @Published var live: [LiveSession] = []
+    /// When each session was last looked at (clicked or "all read"); a state entered later wants attention.
+    @Published private var readAt: [String: Date] = [:]
+    /// Accessibility access: without it a VS Code window in front can't be matched to its sessions.
+    @Published private(set) var axTrusted = FocusProbe.trusted
     @Published var launchAtLogin = LoginItem.isEnabled {
         didSet { LoginItem.setEnabled(launchAtLogin) }
     }
@@ -23,6 +29,9 @@ final class AppModel: ObservableObject {
 
     let store: SampleStore
     private let scanner = LogScanner()
+    private let liveScanner = LiveSessionScanner()
+    private let liveQueue = DispatchQueue(label: "claude-limits.live", qos: .utility)
+    private var liveScanning = false
     private let scanQueue = DispatchQueue(label: "claude-limits.scan", qos: .utility)
     private var timers: [Timer] = []
 
@@ -34,7 +43,16 @@ final class AppModel: ObservableObject {
     init(store: SampleStore = SampleStore()) {
         self.store = store
         snapshot = Self.lastKnown(in: store)
+        if store.isPersistent {
+            let d = UserDefaults.standard
+            // States entered before the feature first ran don't light up: the user has seen them already.
+            if d.object(forKey: "sessionsBaseline") == nil { d.set(Date().timeIntervalSince1970, forKey: "sessionsBaseline") }
+            baseline = Date(timeIntervalSince1970: d.double(forKey: "sessionsBaseline"))
+            readAt = (d.dictionary(forKey: "sessionReadAt") as? [String: Double] ?? [:]).mapValues { Date(timeIntervalSince1970: $0) }
+        }
     }
+
+    private var baseline = Date.distantPast
 
     /// Last recorded poll, so a restart shows numbers right away instead of dashes.
     private static func lastKnown(in store: SampleStore) -> UsageSnapshot? {
@@ -47,6 +65,7 @@ final class AppModel: ObservableObject {
     }
 
     static let pollInterval: TimeInterval = 120
+    static let liveInterval: TimeInterval = 3
     static let scanInterval: TimeInterval = 300
 
     func start() {
@@ -54,7 +73,11 @@ final class AppModel: ObservableObject {
         Log.write("start v\(v), plan \(plan?.rawValue ?? "unknown"), last data \(snapshot.map { Fmt.time.string(from: $0.fetchedAt) } ?? "none")")
         Task { await refresh(force: true) }
         rescanLogs()
+        rescanLive()
         timers = [
+            Timer.scheduledTimer(withTimeInterval: Self.liveInterval, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.rescanLive() }
+            },
             Timer.scheduledTimer(withTimeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
                 Task { @MainActor in await self?.refresh() }
             },
@@ -149,6 +172,82 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: Live sessions
+
+    func rescanLive() {
+        guard !liveScanning else { return }
+        liveScanning = true
+        let titles = Dictionary(sessions.map { ($0.id, $0.title) }) { a, _ in a }
+        liveQueue.async { [liveScanner] in
+            let result = liveScanner.scan(titles: titles)
+            Task { @MainActor in
+                self.liveScanning = false
+                self.readFocused(result)
+                if result != self.live {
+                    for s in result {
+                        let was = self.live.first { $0.id == s.id }
+                        if was?.state != s.state {
+                            Log.write("session \(s.id.prefix(8)) [\(s.entrypoint ?? "?")] \(was.map { "\($0.state)" } ?? "new") → \(s.state)\(self.needsAttention(s) ? ", wants attention" : "")")
+                        }
+                    }
+                    for s in self.live where !result.contains(where: { $0.id == s.id }) {
+                        Log.write("session \(s.id.prefix(8)) ended")
+                    }
+                    self.live = result
+                }
+            }
+        }
+    }
+
+    /// A waiting session whose window is in front while the user is at the Mac counts as read, like a click.
+    private func readFocused(_ sessions: [LiveSession]) {
+        if FocusProbe.trusted != axTrusted { axTrusted.toggle() }
+        let waiting = sessions.filter(needsAttention)
+        guard !waiting.isEmpty, FocusProbe.userIdle < 60 else { return }
+        let seen = FocusProbe.focused(waiting)
+        guard !seen.isEmpty else { return }
+        Log.write("seen in the front window: \(seen.map { $0.prefix(8) }.sorted().joined(separator: ", "))")
+        markRead(Array(seen))
+    }
+
+    /// A session wants attention when it waits for the user and has not been looked at since.
+    func needsAttention(_ s: LiveSession) -> Bool {
+        s.state.wantsUser && s.since > max(readAt[s.id] ?? .distantPast, baseline)
+    }
+
+    /// Attention first (newest first), then working, then the rest.
+    var liveSorted: [LiveSession] {
+        func rank(_ s: LiveSession) -> Int {
+            if needsAttention(s) { return 0 }
+            switch s.state {
+            case .working, .background: return 1
+            case .permission, .question: return 2
+            case .idle, .stopped: return 3
+            }
+        }
+        return live.sorted { (rank($0), $1.since) < (rank($1), $0.since) }
+    }
+
+    var attentionCount: Int { live.filter(needsAttention).count }
+    var workingCount: Int { live.filter(\.isWorking).count }
+
+    func markRead(_ ids: [String]) {
+        let now = Date()
+        for id in ids { readAt[id] = now }
+        // Keep only sessions still alive, plus a day of the rest in case they come back.
+        readAt = readAt.filter { k, v in live.contains { $0.id == k } || now.timeIntervalSince(v) < 86400 }
+        if store.isPersistent {
+            UserDefaults.standard.set(readAt.mapValues { $0.timeIntervalSince1970 }, forKey: "sessionReadAt")
+        }
+    }
+
+    func markAllRead() { markRead(live.map(\.id)) }
+
+    func openSession(_ s: LiveSession) {
+        markRead([s.id])
+        Navigator.open(s)
+    }
+
     // MARK: Derived data
 
     /// Start of the current weekly window (reset time minus 7 days), or 7 days ago.
@@ -164,16 +263,23 @@ final class AppModel: ObservableObject {
         var id: String { session.id }
     }
 
+    /// Weekly-limit percent per API-equivalent dollar of Claude Code spend in the current weekly window.
+    /// An estimate: the weekly percent minus the claude.ai share, spread over local spend.
+    var percentPerDollar: Double? {
+        guard let weekly = snapshot?.sevenDay?.utilization, weekly > 0 else { return nil }
+        let start = weekStart
+        let cost = sessions.reduce(0) { $0 + $1.cost(since: start) }
+        guard cost > 0.01 else { return nil }
+        return weekly * (snapshot?.claudeCodeShare ?? 1) / cost
+    }
+
     /// Sessions ranked by API-equivalent cost inside the current weekly window.
     func topSessions(limit: Int = 10) -> [TopSession] {
         let start = weekStart
         let ranked = sessions.map { ($0, $0.cost(since: start)) }.filter { $0.1 > 0.0001 }.sorted { $0.1 > $1.1 }
-        let total = ranked.reduce(0) { $0 + $1.1 }
-        let weekly = snapshot?.sevenDay?.utilization
-        let ccShare = snapshot?.claudeCodeShare ?? 1
+        let rate = percentPerDollar
         return ranked.prefix(limit).map { s, c in
-            TopSession(session: s, cost: c,
-                       weeklyPercent: weekly.map { total > 0 ? c / total * $0 * ccShare : 0 })
+            TopSession(session: s, cost: c, weeklyPercent: rate.map { c * $0 })
         }
     }
 

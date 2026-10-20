@@ -1,9 +1,9 @@
 import SwiftUI
-import Charts
 import AppKit
 
 struct PopoverView: View {
     @EnvironmentObject var model: AppModel
+    static let width: CGFloat = 540
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,20 +14,26 @@ struct PopoverView: View {
                             .font(.callout).foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    HStack(spacing: 12) {
-                        LimitCard(title: "5 часов", window: model.snapshot?.fiveHour, now: model.now)
-                        LimitCard(title: "Неделя", window: model.snapshot?.sevenDay, now: model.now)
+                    LimitRows()
+                    Divider()
+                    Section("Сессии Claude Code") { LiveSessionsView() } trailing: {
+                        if !model.live.isEmpty {
+                            Text("работают \(model.workingCount) · ждут вас \(model.attentionCount)")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
                     }
+                    Divider()
+                    HeatmapView()
+                    Section("Топ сессий") { TopSessionsView() }
+                    Divider()
                     Section("Какой тариф нужен") { PlanFitView() } trailing: { PlanPicker() }
-                    UsageTabs()
-                    Section("Топ сессий за текущую неделю") { TopSessionsView() }
                 }
                 .padding(16)
             }
             Divider()
             footer.padding(.horizontal, 16).padding(.vertical, 10)
         }
-        .frame(width: 470, height: 720)
+        .frame(width: Self.width, height: 760)
     }
 
     private var footer: some View {
@@ -62,8 +68,8 @@ private struct Section<Content: View, Trailing: View>: View {
         self.trailing = trailing()
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.headline)
                 Spacer()
                 trailing
@@ -79,48 +85,158 @@ extension Section where Trailing == EmptyView {
     }
 }
 
-// MARK: - Limit cards
+// MARK: - Limits: one row per window
 
-private struct LimitCard: View {
-    let title: String
-    let window: LimitWindow?
-    let now: Date
+private struct LimitRows: View {
+    @EnvironmentObject var model: AppModel
 
     var body: some View {
-        let shown = window?.current(at: now)
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+            row("Сессия · 5 часов", model.snapshot?.fiveHour)
+            row("Неделя", model.snapshot?.sevenDay)
+        }
+    }
+
+    private func row(_ title: String, _ window: LimitWindow?) -> some View {
+        let shown = window?.current(at: model.now)
         let frac = (shown?.utilization ?? 0) / 100
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title).font(.subheadline).foregroundStyle(.secondary)
-                Spacer()
-                Text(Fmt.percent(shown?.utilization))
-                    .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(window == nil ? Color.secondary : Palette.color(frac))
-            }
+        return GridRow(alignment: .center) {
+            Text(title).font(.callout).foregroundStyle(.secondary)
+            Text(Fmt.percent(shown?.utilization))
+                .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(window == nil ? Color.secondary : Palette.color(frac))
+                .gridColumnAlignment(.trailing)
             GeometryReader { g in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.secondary.opacity(0.15))
-                    Capsule().fill(Palette.color(frac)).frame(width: max(4, g.size.width * min(frac, 1)))
+                    Capsule().fill(Color.secondary.opacity(0.2))
+                    Capsule().fill(Palette.color(frac)).frame(width: max(6, g.size.width * min(frac, 1)))
                 }
             }
-            .frame(height: 4)
-            if let r = window?.resetsAt, r <= now {
-                // Reset passed since the last poll: the old numbers no longer apply.
-                Text("сброшен \(Fmt.resetAt(r, now: now))").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            } else if let r = window?.resetsAt {
-                // One line when it fits, otherwise the reset time drops to a second line.
-                let countdown = Text("сброс через \(Fmt.countdown(to: r, now: now))")
-                let at = Text(Fmt.resetAt(r, now: now))
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 4) { countdown; Spacer(minLength: 0); at }.fixedSize(horizontal: true, vertical: false)
-                    VStack(alignment: .leading, spacing: 1) { countdown; at }
+            .frame(width: 130, height: 6)
+            Text(resetText(window)).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    private func resetText(_ w: LimitWindow?) -> String {
+        guard let r = w?.resetsAt else { return "" }
+        if r <= model.now { return "сброшен \(Fmt.resetClock(r, now: model.now))" }
+        return "сброс через \(Fmt.duration(to: r, now: model.now)), \(Fmt.resetClock(r, now: model.now))"
+    }
+}
+
+// MARK: - Live sessions
+
+private struct LiveSessionsView: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        let list = model.liveSorted
+        let attention = list.filter(model.needsAttention)
+        let working = list.filter { !model.needsAttention($0) && $0.isWorking }
+        let rest = list.filter { !model.needsAttention($0) && !$0.isWorking }
+        if list.isEmpty {
+            Text("Сейчас нет запущенных сессий.").font(.caption).foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                group("Ждут вас", attention) {
+                    Button("Всё прочитано") { model.markAllRead() }
+                        .buttonStyle(.link).font(.caption)
+                        .focusEffectDisabled()
+                        .help("Снять отметку «ждут вас» со всех сессий")
                 }
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                group("Работают", working) { EmptyView() }
+                group("Остальные", rest) { EmptyView() }
+                if !model.axTrusted, model.store.isPersistent, list.contains(where: { if case .vscode = $0.host { true } else { false } }) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("Чтобы сессия в открытом перед вами окне VS Code не отмечалась, разрешите доступ в «Универсальном доступе».")
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Разрешить") { FocusProbe.requestAccess() }
+                            .buttonStyle(.link).focusEffectDisabled()
+                    }
+                    .font(.caption2).foregroundStyle(.secondary)
+                }
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+    }
+
+    @ViewBuilder
+    private func group<T: View>(_ title: String, _ items: [LiveSession], @ViewBuilder trailing: () -> T) -> some View {
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(title.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Spacer()
+                    trailing()
+                }
+                ForEach(items) { s in
+                    Button { model.openSession(s) } label: { row(s) }
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
+                        .help("Перейти к сессии — \(Self.hostName(s))")
+                }
+            }
+        }
+    }
+
+    private func row(_ s: LiveSession) -> some View {
+        let (icon, color) = Self.icon(s.state, attention: model.needsAttention(s))
+        return HStack(spacing: 8) {
+            Image(systemName: icon).font(.title3).foregroundStyle(color).frame(width: 22)
+            Text(s.title).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.tail)
+                .layoutPriority(1)
+            Text(s.project).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 8)
+            Text(Self.stateText(s)).font(.callout).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+            Text(Fmt.ago(s.since, now: model.now)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .trailing)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+
+    /// Orange while the session waits for you and hasn't been looked at; gray once read.
+    private static func icon(_ state: LiveSession.State, attention: Bool) -> (String, Color) {
+        switch state {
+        case .working, .background: return ("play.circle.fill", .green)
+        case .permission: return ("hand.raised.circle.fill", .orange)
+        case .question(let plan): return (plan ? "list.bullet.circle.fill" : "questionmark.circle.fill", .orange)
+        case .idle: return attention ? ("bell.circle.fill", .orange) : ("checkmark.circle", .secondary)
+        case .stopped: return ("stop.circle", .secondary)
+        }
+    }
+
+    static func stateText(_ s: LiveSession) -> String {
+        switch s.state {
+        case .working(let tool):
+            var text = tool.map { "работает: \($0)" } ?? "работает"
+            if s.agents > 0 { text += " · агентов \(s.agents)" }
+            return text
+        case .background: return "в фоне: \(s.agents + s.commands)"
+        case .permission(let detail, let sure):
+            guard sure else { return "ждёт разрешения?" }
+            switch detail {
+            case "input needed": return "ждёт данных"
+            case "sandbox request": return "просит доступ"
+            case "worker request": return "разрешение для агента"
+            case "goal proposal": return "предлагает цель"
+            default: return "ждёт ответа в диалоге"
+            }
+        case .question(let plan): return plan ? "план на одобрение" : "задал вопрос"
+        case .idle: return "ждёт ввода"
+        case .stopped: return "остановлена"
+        }
+    }
+
+    static func hostName(_ s: LiveSession) -> String {
+        if let pid = s.hostPID, let name = NSRunningApplication(processIdentifier: pid)?.localizedName {
+            return name == "Code" ? "VS Code" : name
+        }
+        switch s.host {
+        case .vscode: return "VS Code"
+        case .terminal: return "терминал"
+        case .desktop: return "Claude Desktop"
+        case .other: return s.entrypoint ?? "?"
+        }
     }
 }
 
@@ -262,141 +378,78 @@ private struct PlanFitView: View {
     }
 }
 
-// MARK: - 7-day usage: Claude Code heatmap or limits line chart
 
-private struct UsageTabs: View {
-    @AppStorage("usageTab") private var tab = Tab.claudeCode
-
-    enum Tab: String, CaseIterable, Identifiable {
-        case claudeCode, limits
-        var id: String { rawValue }
-        var title: String { self == .claudeCode ? "Claude Code" : "Лимиты" }
-    }
-
-    var body: some View {
-        Section("Расход за 7 дней") {
-            switch tab {
-            case .claudeCode: HeatmapView()
-            case .limits: HistoryChart()
-            }
-        } trailing: {
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
-        }
-    }
-}
-
-// MARK: - Line chart of recorded polls
-
-private struct HistoryChart: View {
-    @EnvironmentObject var model: AppModel
-
-    private struct Point: Identifiable {
-        let t: Date, v: Double, series: String
-        var id: String { "\(series)\(t.timeIntervalSince1970)" }
-    }
-
-    var body: some View {
-        let start = model.now.addingTimeInterval(-7 * 86400)
-        let samples = model.store.since(start)
-        let points = samples.flatMap { s -> [Point] in
-            var p: [Point] = []
-            if let v = s.five { p.append(Point(t: s.t, v: v, series: "5 часов")) }
-            if let v = s.week { p.append(Point(t: s.t, v: v, series: "Неделя")) }
-            return p
-        }
-        if samples.count < 2 {
-            Text("История копится: приложение записывает замер каждые \(Int(AppModel.pollInterval / 60)) мин. График появится после нескольких замеров.")
-                .font(.caption).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
-        } else {
-            // Scale to the peak with ~10% headroom, rounded to a step whose half is a whole number.
-            let peak = points.map(\.v).max() ?? 0
-            let top = [10.0, 20, 40, 60, 80].first { $0 >= peak * 1.1 } ?? 100
-            Chart(points) { p in
-                LineMark(x: .value("Время", p.t), y: .value("%", p.v))
-                    .foregroundStyle(by: .value("Лимит", p.series))
-                    .interpolationMethod(.stepEnd)
-            }
-            .chartForegroundStyleScale(["5 часов": Color.blue, "Неделя": Color.purple])
-            .chartYScale(domain: 0...top)
-            .chartXScale(domain: start...model.now)
-            .chartXAxis {
-                AxisMarks(values: .stride(by: .day)) { v in
-                    AxisGridLine()
-                    AxisValueLabel { if let d = v.as(Date.self) { Text(Fmt.weekday.string(from: d)) } }
-                }
-            }
-            .chartYAxis { AxisMarks(values: [0, top / 2, top]) { v in AxisGridLine(); AxisValueLabel("\(Int(v.as(Double.self) ?? 0))%") } }
-            .frame(height: 120)
-        }
-    }
-}
-
-// MARK: - Heatmap 7 days × 24 hours of Claude Code spend
+// MARK: - Heatmap 7 days × 24 hours of Claude Code spend, in weekly-limit percent
 
 private struct HeatmapView: View {
     @EnvironmentObject var model: AppModel
 
     private let cell: CGFloat = 14
-    private let gap: CGFloat = 2
+    private let gap: CGFloat = 3
+    private let dayWidth: CGFloat = 60
 
     var body: some View {
         let cal = Calendar.current
         let today = cal.startOfDay(for: model.now)
         let days = (0..<7).reversed().compactMap { cal.date(byAdding: .day, value: -$0, to: today) }
-        let start = days.first!
-        let values = model.logHourly(since: start)
+        let rate = model.percentPerDollar
+        // Without a weekly reading the scale falls back to dollars.
+        let values = model.logHourly(since: days.first!).mapValues { $0 * (rate ?? 1) }
         let maxV = values.values.max() ?? 0
+        let unit: (Double) -> String = { rate != nil ? Fmt.share($0) : String(format: "$%.2f", $0) }
+        let rows = days.map { day -> (Date, Double) in
+            let h0 = Int(day.timeIntervalSince1970 / 3600)
+            return (day, (h0..<h0 + 24).reduce(0) { $0 + (values[$1] ?? 0) })
+        }
 
-        VStack(alignment: .leading, spacing: 8) {
+        Section(rate != nil ? "Расход недельного лимита за 7 дней" : "Расход Claude Code за 7 дней") {
             VStack(alignment: .leading, spacing: gap) {
                 HStack(spacing: gap) {
-                    Text("").frame(width: 44)
+                    Spacer().frame(width: dayWidth)
                     ForEach(0..<24, id: \.self) { h in
-                        Text(h % 3 == 0 ? "\(h)" : "")
-                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                        Text(h % 3 == 0 ? String(format: "%02d", h) : "")
+                            .font(.system(size: 9)).foregroundStyle(.secondary).fixedSize()
                             .frame(width: cell, alignment: .leading)
                     }
                 }
-                ForEach(days, id: \.self) { day in
+                ForEach(rows, id: \.0) { day, total in
                     HStack(spacing: gap) {
-                        Text(Fmt.weekday.string(from: day))
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
-                            .frame(width: 44, alignment: .leading)
+                        Text(cal.isDate(day, inSameDayAs: today) ? "сегодня" : Fmt.weekday.string(from: day))
+                            .font(.system(size: 11, weight: cal.isDate(day, inSameDayAs: today) ? .semibold : .regular))
+                            .foregroundStyle(.secondary)
+                            .frame(width: dayWidth, alignment: .leading)
                         ForEach(0..<24, id: \.self) { h in
                             let date = cal.date(byAdding: .hour, value: h, to: day)!
-                            let key = Int(date.timeIntervalSince1970 / 3600)
-                            let v = values[key] ?? 0
+                            let v = values[Int(date.timeIntervalSince1970 / 3600)] ?? 0
                             RoundedRectangle(cornerRadius: 3)
                                 .fill(fill(v, max: maxV, future: date > model.now))
                                 .frame(width: cell, height: cell)
-                                .help("\(Fmt.dayTime.string(from: date)) — \(label(v))")
+                                .help("\(Fmt.dayTime.string(from: date)) — \(v > 0 ? unit(v) : "нет расхода")")
                         }
+                        Text(total > 0 ? unit(total) : "—")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                 }
+                HStack(spacing: 6) {
+                    Spacer().frame(width: dayWidth)
+                    Text("мало").font(.caption2).foregroundStyle(.secondary)
+                    LinearGradient(colors: [0, 0.5, 1].map { Palette.color($0) }, startPoint: .leading, endPoint: .trailing)
+                        .frame(width: 70, height: 6).clipShape(Capsule())
+                    Text("много" + (maxV > 0 ? " — до \(unit(maxV)) за час" : "")).font(.caption2).foregroundStyle(.secondary)
+                }
+                .padding(.top, 4)
             }
-
-            HStack(spacing: 6) {
-                Text("По логам Claude Code, в $ по ценам API").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Text("мало").font(.caption2).foregroundStyle(.secondary)
-                LinearGradient(colors: [0, 0.5, 1].map { Palette.color($0) }, startPoint: .leading, endPoint: .trailing)
-                    .frame(width: 70, height: 8).clipShape(Capsule())
-                Text("много").font(.caption2).foregroundStyle(.secondary)
-            }
+        } trailing: {
+            let total = rows.reduce(0) { $0 + $1.1 }
+            if total > 0 { Text("всего \(unit(total))").font(.callout).foregroundStyle(.secondary) }
         }
-    }
-
-    private func label(_ v: Double) -> String {
-        v <= 0 ? "нет расхода" : String(format: "≈$%.2f", v)
+        .help(rate != nil ? "Доля недельного лимита — оценка по логам Claude Code: расход в $ по ценам API пересчитан по текущему недельному проценту" : "")
     }
 
     private func fill(_ v: Double, max m: Double, future: Bool) -> Color {
-        if future { return Color.secondary.opacity(0.04) }
-        guard v > 0, m > 0 else { return Color.secondary.opacity(0.12) }
+        if future { return Color.secondary.opacity(0.06) }
+        guard v > 0, m > 0 else { return Color.secondary.opacity(0.18) }
         // sqrt keeps small hours visible next to one huge hour.
         return Palette.color((v / m).squareRoot())
     }
@@ -414,40 +467,36 @@ private struct TopSessionsView: View {
             Text("Нет сессий Claude Code в текущем недельном окне.")
                 .font(.caption).foregroundStyle(.secondary)
         } else {
-            VStack(spacing: 8) {
-                ForEach(Array(top.enumerated()), id: \.element.id) { i, t in
-                    Button { copyResume(t.session) } label: { row(i + 1, t, frac: t.cost / maxCost) }
+            VStack(spacing: 6) {
+                ForEach(top) { t in
+                    Button { copyResume(t.session) } label: { row(t, frac: t.cost / maxCost) }
                         .buttonStyle(.plain)
                         .help("Нажмите, чтобы скопировать команду продолжения сессии")
                 }
                 Text("% — оценка доли недельного лимита по логам Claude Code. Клик копирует команду `claude --resume`.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
 
-    private func row(_ rank: Int, _ t: AppModel.TopSession, frac: Double) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("\(rank).").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 20, alignment: .trailing)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(t.session.title).font(.callout).lineLimit(1).truncationMode(.tail)
-                    Text(subtitle(t)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(t.weeklyPercent.map { String(format: "≈%.1f%%", $0) } ?? "—")
-                        .font(.callout.monospacedDigit().bold())
-                        .foregroundStyle(Palette.color(frac))
-                    Text(String(format: "$%.2f", t.cost)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                }
+    private func row(_ t: AppModel.TopSession, frac: Double) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(t.session.title).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.tail)
+                Text(subtitle(t)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            GeometryReader { g in
-                Capsule().fill(Palette.color(frac)).frame(width: max(3, g.size.width * frac))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.2))
+                Capsule().fill(Palette.color(frac)).frame(width: max(6, 120 * frac))
             }
-            .frame(height: 3)
-            .padding(.leading, 28)
+            .frame(width: 120, height: 6)
+            Text(t.weeklyPercent.map(Fmt.share) ?? String(format: "$%.2f", t.cost))
+                .font(.callout.monospacedDigit().bold())
+                .frame(width: 52, alignment: .trailing)
+                .help(String(format: "$%.2f по ценам API", t.cost))
         }
         .contentShape(Rectangle())
         .overlay(alignment: .topTrailing) {

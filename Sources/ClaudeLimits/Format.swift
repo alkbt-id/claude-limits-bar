@@ -42,6 +42,35 @@ enum Fmt {
         return "\(m)м"
     }
 
+    /// Spelled-out countdown for the panel: "37 мин", "1 ч 32 мин", "6 дн 10 ч".
+    static func duration(to date: Date, now: Date = Date()) -> String {
+        let s = max(0, Int(date.timeIntervalSince(now)))
+        let d = s / 86400, h = (s % 86400) / 3600, m = (s % 3600) / 60
+        if d > 0 { return "\(d) дн \(h) ч" }
+        if h > 0 { return "\(h) ч \(m) мин" }
+        return "\(m) мин"
+    }
+
+    /// Reset moment: "11:49" today, "Пн 20:59" on another day.
+    static func resetClock(_ d: Date, now: Date = Date()) -> String {
+        Calendar.current.isDate(d, inSameDayAs: now) ? time.string(from: d) : weekdayTime.string(from: d)
+    }
+
+    /// Share of a limit with a Russian decimal comma: "18%", "6,8%", "0,4%".
+    static func share(_ v: Double) -> String {
+        let text = v >= 10 ? "\(Int(v.rounded()))" : String(format: "%.1f", v).replacingOccurrences(of: ".", with: ",")
+        return text + "%"
+    }
+
+    /// Time since a moment: "только что", "5 мин", "2 ч", "3 д".
+    static func ago(_ date: Date, now: Date = Date()) -> String {
+        let s = max(0, Int(now.timeIntervalSince(date)))
+        if s < 60 { return "только что" }
+        if s < 3600 { return "\(s / 60) мин" }
+        if s < 86400 { return "\(s / 3600) ч" }
+        return "\(s / 86400) д"
+    }
+
     static func percent(_ v: Double?) -> String {
         guard let v else { return "—" }
         return "\(Int(v.rounded()))%"
@@ -58,6 +87,13 @@ enum Fmt {
         let f = DateFormatter()
         f.locale = Locale(identifier: "ru_RU")
         f.dateFormat = "EE d MMM, HH:mm"
+        return f
+    }()
+
+    static let weekdayTime: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ru_RU")
+        f.dateFormat = "EE HH:mm"
         return f
     }()
 

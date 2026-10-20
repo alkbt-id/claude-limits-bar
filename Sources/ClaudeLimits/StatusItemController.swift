@@ -2,7 +2,8 @@ import AppKit
 import SwiftUI
 import Combine
 
-/// Menu bar item: "5ч 42% 2ч13м" over "7д 8% 2д19ч" in two small lines, percent colored by how much of the limit is spent.
+/// Menu bar item: "5ч 42% 11:49" over "7д 8% Пн 20:59" in two small lines, percent colored by how much of the limit is spent.
+/// While Claude Code sessions run, a column on the left shows ▶2 (working) over 🔔1 (waiting for you).
 @MainActor
 final class StatusItemController: NSObject {
     private let model: AppModel
@@ -47,7 +48,11 @@ final class StatusItemController: NSObject {
         guard let button = item.button else { return }
         button.image = Self.image(for: model)
         // Errors are shown only inside the panel; the menu bar stays quiet.
-        button.toolTip = "Лимиты Claude — нажмите, чтобы открыть график"
+        var tip = "Лимиты Claude — нажмите, чтобы открыть панель"
+        if !model.live.isEmpty {
+            tip += "\nСессий Claude Code: \(model.live.count) · работают: \(model.workingCount) · ждут вас: \(model.attentionCount)"
+        }
+        button.toolTip = tip
     }
 
     static func image(for model: AppModel) -> NSImage {
@@ -57,10 +62,10 @@ final class StatusItemController: NSObject {
         let timeFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
         let gray = NSColor.secondaryLabelColor
 
-        // Columns: label | percent (right-aligned, fixed width) | time to reset.
+        // Columns: label | percent (right-aligned, fixed width) | reset time.
         let rows = [("5ч", s?.fiveHour, CGFloat(12)), ("7д", s?.sevenDay, CGFloat(2))].map { ($0.0, $0.1?.current(at: model.now), $0.2) }.map { label, w, baseline in
             let color: NSColor = w.map { Palette.nsColor($0.utilization / 100) } ?? gray
-            let time = w?.resetsAt != nil ? Fmt.countdown(to: w?.resetsAt, now: model.now) : ""
+            let time = w?.resetsAt.map { Fmt.resetClock($0, now: model.now) } ?? ""
             return (NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: gray]),
                     NSAttributedString(string: Fmt.percent(w?.utilization), attributes: [.font: valueFont, .foregroundColor: color]),
                     NSAttributedString(string: time, attributes: [.font: timeFont, .foregroundColor: gray]),
@@ -70,13 +75,26 @@ final class StatusItemController: NSObject {
         let labelWidth = ceil(rows.map { $0.0.size().width }.max() ?? 0)
         let valueWidth = ceil(("100%" as NSString).size(withAttributes: [.font: valueFont]).width)
         let timeWidth = ceil(rows.map { $0.2.size().width }.max() ?? 0)
-        let valueRight = labelWidth + 3 + valueWidth
+        // Sessions column: glyph + count per row, only while sessions run.
+        let sessions: [(NSAttributedString, CGFloat)] = model.live.isEmpty ? [] : {
+            let n = model.attentionCount
+            let w = model.workingCount
+            return [(Self.counter("play.fill", w, color: w > 0 ? .systemGreen : .tertiaryLabelColor, font: valueFont), 12),
+                    (Self.counter("bell.fill", n, color: n > 0 ? .systemOrange : .tertiaryLabelColor, font: valueFont), 2)]
+        }()
+        let sessionsWidth = ceil(sessions.map { $0.0.size().width }.max() ?? 0)
+        let x0 = sessionsWidth > 0 ? sessionsWidth + 6 : 0
+
+        let valueRight = x0 + labelWidth + 3 + valueWidth
         let width = valueRight + (timeWidth > 0 ? 3 + timeWidth : 0)
 
         // draw(at:) takes the line's bottom-left corner; the baseline sits `descender` above it.
         let img = NSImage(size: NSSize(width: width, height: 22), flipped: false) { _ in
+            for (text, baseline) in sessions {
+                text.draw(at: NSPoint(x: 0, y: baseline + valueFont.descender))
+            }
             for (label, value, time, baseline) in rows {
-                label.draw(at: NSPoint(x: 0, y: baseline + labelFont.descender))
+                label.draw(at: NSPoint(x: x0, y: baseline + labelFont.descender))
                 value.draw(at: NSPoint(x: valueRight - value.size().width, y: baseline + valueFont.descender))
                 time.draw(at: NSPoint(x: valueRight + 3, y: baseline + timeFont.descender))
             }
@@ -84,5 +102,20 @@ final class StatusItemController: NSObject {
         }
         img.isTemplate = false
         return img
+    }
+
+    /// SF Symbol + count, both in `color`.
+    private static func counter(_ symbol: String, _ n: Int, color: NSColor, font: NSFont) -> NSAttributedString {
+        let s = NSMutableAttributedString()
+        let config = NSImage.SymbolConfiguration(pointSize: 7, weight: .bold).applying(.init(paletteColors: [color]))
+        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) {
+            let a = NSTextAttachment()
+            a.image = img
+            a.bounds = NSRect(x: 0, y: 0, width: img.size.width, height: img.size.height)
+            s.append(NSAttributedString(attachment: a))
+            s.append(NSAttributedString(string: " ", attributes: [.font: NSFont.systemFont(ofSize: 2)]))
+        }
+        s.append(NSAttributedString(string: "\(n)", attributes: [.font: font, .foregroundColor: color]))
+        return s
     }
 }

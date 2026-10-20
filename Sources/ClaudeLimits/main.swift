@@ -31,6 +31,22 @@ MainActor.assumeIsolated {
         }
         RunLoop.main.run()
     }
+    if args.contains("--sessions") {
+        // Debug: print what the panel's session list would show; `--watch` repeats every 3 s.
+        let scanner = LiveSessionScanner()
+        repeat {
+        print("— \(Fmt.time.string(from: Date()))")
+        for s in scanner.scan() {
+            var window = ""
+            if case .vscode(let id) = s.host { window = " window \(Navigator.vscodeWindowID(claudePID: s.pid, appPID: s.hostPID, bundleID: id).map(String.init) ?? "?")" }
+            print("\(s.id.prefix(8)) pid \(s.pid) \(s.entrypoint ?? "?") host \(s.host)\(window) tty \(s.tty ?? "-") — \(s.title)")
+            print("    \(s.state) since \(Fmt.time.string(from: s.since)), agents \(s.agents), commands \(s.commands), cwd \(s.cwd)")
+        }
+        fflush(stdout)
+        if args.contains("--watch") { Thread.sleep(forTimeInterval: 3) }
+        } while args.contains("--watch")
+        exit(0)
+    }
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate

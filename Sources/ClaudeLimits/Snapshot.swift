@@ -19,7 +19,7 @@ enum Snapshot {
             let suffix = appearance == .aqua ? "light" : "dark"
             let host = NSHostingView(rootView: PopoverView().environmentObject(model)
                 .background(Color(nsColor: .windowBackgroundColor)))
-            host.frame = NSRect(x: 0, y: 0, width: 470, height: 720)
+            host.frame = NSRect(x: 0, y: 0, width: PopoverView.width, height: 760)
             host.appearance = NSAppearance(named: appearance)
             let win = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
             win.appearance = NSAppearance(named: appearance)
@@ -100,6 +100,25 @@ enum Snapshot {
             return SessionUsage(id: UUID().uuidString, title: item.0, cwd: "/Users/demo/code/\(item.1)",
                                 lastActive: now.addingTimeInterval(-Double(i) * 7 * 3600), hourly: hourly)
         }
+
+        func live(_ title: String, _ project: String, _ host: LiveSession.Host, _ state: LiveSession.State,
+                  ago: TimeInterval, agents: Int = 0, commands: Int = 0) -> LiveSession {
+            LiveSession(id: UUID().uuidString, pid: 0, title: title, cwd: "/Users/demo/code/\(project)",
+                        entrypoint: host == .vscode(bundleID: "com.microsoft.VSCode") ? "claude-vscode" : "cli",
+                        state: state, since: now.addingTimeInterval(-ago), agents: agents, commands: commands,
+                        host: host, hostPID: nil, tty: nil)
+        }
+        let vscode = LiveSession.Host.vscode(bundleID: "com.microsoft.VSCode")
+        model.live = [
+            live("Рефакторинг API платежей", "payments-api", vscode, .question(plan: false), ago: 120),
+            live("Миграция на Swift 6", "ios-app", .terminal(bundleID: "com.googlecode.iterm2"),
+                 .permission(detail: "dialog open", sure: true), ago: 50),
+            live("Разбор флаки-тестов CI", "backend", vscode, .working(tool: "Bash"), ago: 300, agents: 2, commands: 1),
+            live("Новый онбординг", "web-app", .desktop, .background, ago: 600, agents: 1),
+            live("Документация SDK", "sdk", vscode, .idle, ago: 180),
+            live("Ревью PR #482", "web-app", vscode, .idle, ago: 2400),
+        ]
+        model.markRead([model.live[5].id])
         return model
     }
 
