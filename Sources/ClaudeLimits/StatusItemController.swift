@@ -83,7 +83,7 @@ final class StatusItemController: NSObject {
             let w = model.workingCount
             return [(Self.counter("play.fill", w, color: w > 0 ? .systemGreen : .tertiaryLabelColor, font: valueFont), 12),
                     (n > 0 ? Self.counter("bell.fill", n, color: .systemOrange, font: valueFont)
-                           : Self.counter("terminal.fill", model.live.count, color: gray, font: valueFont), 2)]
+                           : Self.counter("checkmark", model.live.count, color: gray, font: valueFont), 2)]
         }()
         let sessionsWidth = ceil(sessions.map { $0.0.size().width }.max() ?? 0)
         let x0 = sessionsWidth > 0 ? sessionsWidth + 6 : 0
