@@ -17,31 +17,52 @@ enum Snapshot {
 
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let suffix = appearance == .aqua ? "light" : "dark"
-            let host = NSHostingView(rootView: PopoverView().environmentObject(model)
-                .background(Color(nsColor: .windowBackgroundColor)))
-            host.frame = NSRect(x: 0, y: 0, width: PopoverView.width, height: 760)
-            host.appearance = NSAppearance(named: appearance)
-            let win = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-            win.appearance = NSAppearance(named: appearance)
-            win.backgroundColor = appearance == .aqua ? .white : NSColor(white: 0.16, alpha: 1)
-            win.contentView = host
-            host.layoutSubtreeIfNeeded()
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            save(host, to: dir.appendingPathComponent("panel-\(suffix).png"))
-
-            let img = StatusItemController.image(for: model)
-            let bar = NSView(frame: NSRect(x: 0, y: 0, width: img.size.width + 24, height: 24))
-            bar.appearance = NSAppearance(named: appearance)
-            bar.wantsLayer = true
-            bar.layer?.backgroundColor = (appearance == .aqua ? NSColor(white: 0.93, alpha: 1) : NSColor(white: 0.12, alpha: 1)).cgColor
-            let iv = NSImageView(frame: NSRect(x: 12, y: 1, width: img.size.width, height: img.size.height))
-            iv.image = img
-            bar.addSubview(iv)
-            let w2 = NSWindow(contentRect: bar.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-            w2.appearance = NSAppearance(named: appearance)
-            w2.contentView = bar
-            save(bar, to: dir.appendingPathComponent("menubar-\(suffix).png"))
+            await render(PopoverView(), model: model, appearance: appearance, height: 760,
+                         to: dir.appendingPathComponent("panel-\(suffix).png"))
+            // Each block on its own, at its natural height, for the README.
+            for part in [PanelPart.Kind.sessions, .usage, .plan] {
+                await render(PanelPart(kind: part).padding(16), model: model, appearance: appearance, height: nil,
+                             to: dir.appendingPathComponent("part-\(part.rawValue)-\(suffix).png"))
+            }
+            saveMenuBar(model, appearance: appearance, to: dir.appendingPathComponent("menubar-\(suffix).png"))
         }
+        // The calm menu bar: nobody waits, the gray checkmark counts the rest.
+        model.markAllRead()
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let suffix = appearance == .aqua ? "light" : "dark"
+            saveMenuBar(model, appearance: appearance, to: dir.appendingPathComponent("menubar-quiet-\(suffix).png"))
+        }
+    }
+
+    /// Renders a view in a borderless window; `height` nil takes the view's own height.
+    private static func render<V: View>(_ view: V, model: AppModel, appearance: NSAppearance.Name, height: CGFloat?, to url: URL) async {
+        let host = NSHostingView(rootView: view.environmentObject(model)
+            .frame(width: PopoverView.width)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        host.appearance = NSAppearance(named: appearance)
+        host.frame = NSRect(x: 0, y: 0, width: PopoverView.width, height: height ?? host.fittingSize.height)
+        let win = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        win.appearance = NSAppearance(named: appearance)
+        win.backgroundColor = appearance == .aqua ? .white : NSColor(white: 0.16, alpha: 1)
+        win.contentView = host
+        host.layoutSubtreeIfNeeded()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        save(host, to: url)
+    }
+
+    private static func saveMenuBar(_ model: AppModel, appearance: NSAppearance.Name, to url: URL) {
+        let img = StatusItemController.image(for: model)
+        let bar = NSView(frame: NSRect(x: 0, y: 0, width: img.size.width + 24, height: 24))
+        bar.appearance = NSAppearance(named: appearance)
+        bar.wantsLayer = true
+        bar.layer?.backgroundColor = (appearance == .aqua ? NSColor(white: 0.93, alpha: 1) : NSColor(white: 0.12, alpha: 1)).cgColor
+        let iv = NSImageView(frame: NSRect(x: 12, y: 1, width: img.size.width, height: img.size.height))
+        iv.image = img
+        bar.addSubview(iv)
+        let win = NSWindow(contentRect: bar.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        win.appearance = NSAppearance(named: appearance)
+        win.contentView = bar
+        save(bar, to: url)
     }
 
     private static func demoModel() -> AppModel {

@@ -14,19 +14,14 @@ struct PopoverView: View {
                             .font(.callout).foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    LimitRows()
+                    PanelPart(kind: .limits)
                     Divider()
-                    Section("Сессии Claude Code") { LiveSessionsView() } trailing: {
-                        if !model.live.isEmpty {
-                            Text("работают \(model.workingCount) · ждут вас \(model.attentionCount)")
-                                .font(.callout).foregroundStyle(.secondary)
-                        }
-                    }
+                    PanelPart(kind: .sessions)
                     Divider()
-                    HeatmapView()
-                    Section("Топ сессий") { TopSessionsView() }
+                    PanelPart(kind: .usage)
+                    PanelPart(kind: .top)
                     Divider()
-                    Section("Какой тариф нужен") { PlanFitView() } trailing: { PlanPicker() }
+                    PanelPart(kind: .plan)
                 }
                 .padding(16)
             }
@@ -53,6 +48,33 @@ struct PopoverView: View {
             .disabled(model.loading)
             .help("Обновить сейчас")
             Button("Выход") { NSApp.terminate(nil) }
+        }
+    }
+}
+
+/// One block of the panel; `--snapshot` also renders each on its own for the README.
+struct PanelPart: View {
+    enum Kind: String, CaseIterable { case limits, sessions, usage, top, plan }
+    @EnvironmentObject var model: AppModel
+    let kind: Kind
+
+    var body: some View {
+        switch kind {
+        case .limits:
+            LimitRows()
+        case .sessions:
+            Section("Сессии Claude Code") { LiveSessionsView() } trailing: {
+                if !model.live.isEmpty {
+                    Text("работают \(model.workingCount) · ждут вас \(model.attentionCount)")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+        case .usage:
+            HeatmapView()
+        case .top:
+            Section("Топ сессий") { TopSessionsView() }
+        case .plan:
+            Section("Какой тариф нужен") { PlanFitView() } trailing: { PlanPicker() }
         }
     }
 }
