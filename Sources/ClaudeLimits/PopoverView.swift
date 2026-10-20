@@ -206,7 +206,9 @@ private struct LiveSessionsView: View {
             Image(systemName: icon).font(.title3).foregroundStyle(color).frame(width: 22)
             Text(s.title).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.tail)
                 .layoutPriority(1)
+            // The project gets its full width first; a long title is cut instead.
             Text(s.project).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                .layoutPriority(2)
             Spacer(minLength: 8)
             Text(Self.stateText(s)).font(.callout).foregroundStyle(.secondary).lineLimit(1).fixedSize()
             Text(Fmt.ago(s.since, now: model.now)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
