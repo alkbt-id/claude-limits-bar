@@ -40,12 +40,14 @@ struct LiveSession: Identifiable, Equatable {
     var entrypoint: String?
     var state: State
     var since: Date              // when the current state began
-    var agents: Int              // running subagents
-    var commands: Int            // running shell commands, background ones included
+    var agentNames: [String]     // running subagents: their task descriptions
+    var commandLines: [String]   // running shell commands, background ones included
     var host: Host
     var hostPID: Int32?
     var tty: String?
 
+    var agents: Int { agentNames.count }
+    var commands: Int { commandLines.count }
     var project: String { URL(fileURLWithPath: cwd).lastPathComponent }
     var isWorking: Bool {
         if case .working = state { return true }
@@ -88,8 +90,9 @@ final class LiveSessionScanner {
                 return t
             }
             let procStart = Proc.startTime(proc)
-            let agents = tail.map { Self.runningAgents(transcript: $0.url, since: procStart) } ?? 0
-            let commands = Proc.children(pid).filter { Proc.isCommand($0) }.count
+            let agentNames = tail.map { Self.runningAgents(transcript: $0.url, since: procStart) } ?? []
+            let commandLines = Proc.children(pid).filter { Proc.isCommand($0) }.map { Proc.commandLine($0) }
+            let agents = agentNames.count, commands = commandLines.count
 
             let status = o["status"] as? String
             let statusAt = (o["statusUpdatedAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
@@ -102,7 +105,7 @@ final class LiveSessionScanner {
             let name = (o["nameSource"] as? String) == "derived" ? nil : o["name"] as? String
             let title = name ?? tail?.title ?? titles[sid] ?? URL(fileURLWithPath: cwd).lastPathComponent
             out.append(LiveSession(id: sid, pid: pid, title: title, cwd: cwd, entrypoint: entrypoint,
-                                   state: state, since: since ?? startedAt ?? Date(), agents: agents, commands: commands,
+                                   state: state, since: since ?? startedAt ?? Date(), agentNames: agentNames, commandLines: commandLines,
                                    host: host, hostPID: hostPID, tty: Proc.tty(proc)))
         }
         tails = tails.filter { alive.contains($0.key) }
@@ -146,19 +149,23 @@ final class LiveSessionScanner {
 
     /// Subagents of this session that have not finished: `<project>/<session>/subagents/agent-*.meta.json`
     /// without `"finished": true`, whose transcript was written by this process recently.
-    private static func runningAgents(transcript: URL, since start: Date?) -> Int {
+    /// Returns their descriptions, oldest first.
+    private static func runningAgents(transcript: URL, since start: Date?) -> [String] {
         let dir = transcript.deletingPathExtension().appendingPathComponent("subagents")
-        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return 0 }
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
         let fresh = Date().addingTimeInterval(-10 * 60)
-        var n = 0
+        var found: [(Date, String)] = []
         for f in files where f.lastPathComponent.hasSuffix(".meta.json") {
             let log = dir.appendingPathComponent(f.lastPathComponent.replacingOccurrences(of: ".meta.json", with: ".jsonl"))
             guard let m = try? log.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
                   m > fresh, m > (start ?? .distantPast) else { continue }
             guard let d = try? Data(contentsOf: f), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
-            if (o["finished"] as? Bool) != true { n += 1 }
+            if (o["finished"] as? Bool) != true {
+                let name = (o["description"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? o["agentType"] as? String ?? "агент"
+                found.append((m, name))
+            }
         }
-        return n
+        return found.sorted { $0.0 < $1.0 }.map(\.1)
     }
 
     // MARK: Files and processes
@@ -312,6 +319,73 @@ enum Proc {
         var buf = [Int32](repeating: 0, count: 256)
         let n = proc_listchildpids(pid, &buf, Int32(buf.count * MemoryLayout<Int32>.size))
         return n > 0 ? Array(buf.prefix(Int(n))) : []
+    }
+
+    /// What a Bash tool command runs, its first line only. The tool starts
+    /// `zsh -c "<snapshot setup> && eval '<command>' < /dev/null && pwd -P >| <file>"`; when the shell exec'd
+    /// the command, argv is the command itself.
+    static func commandLine(_ pid: Int32) -> String {
+        guard let args = args(pid), !args.isEmpty else { return "?" }
+        let name = args[0].isEmpty ? "" : URL(fileURLWithPath: args[0]).lastPathComponent
+        var text = ([name] + args.dropFirst()).joined(separator: " ")
+        let shell = name.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if ["sh", "bash", "zsh", "dash"].contains(shell),
+           let flag = args.dropFirst().firstIndex(where: { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("c") }),
+           flag + 1 < args.count {
+            let script = args[flag + 1]
+            text = script
+            if script.contains("&& pwd -P >| "), let r = script.range(of: "&& eval ") { text = shellWord(script[r.upperBound...]) }
+        }
+        let line = text.split(whereSeparator: \.isNewline).first { !$0.allSatisfy(\.isWhitespace) } ?? ""
+        let flat = line.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return flat.isEmpty ? "?" : flat
+    }
+
+    /// The first shell word of `s` with its quoting removed: `'a'"'"'b'` → `a'b`.
+    private static func shellWord(_ s: Substring) -> String {
+        var out = "", i = s.startIndex
+        var quote: Character?
+        while i < s.endIndex {
+            let c = s[i]
+            switch quote {
+            case "'":
+                if c == "'" { quote = nil } else { out.append(c) }
+            case "\"":
+                if c == "\"" { quote = nil }
+                else if c == "\\", s.index(after: i) < s.endIndex, "\"\\$`".contains(s[s.index(after: i)]) {
+                    i = s.index(after: i); out.append(s[i])
+                } else { out.append(c) }
+            default:
+                if c == " " || c == "\t" { return out }
+                if c == "'" || c == "\"" { quote = c }
+                else if c == "\\", s.index(after: i) < s.endIndex { i = s.index(after: i); out.append(s[i]) }
+                else { out.append(c) }
+            }
+            i = s.index(after: i)
+        }
+        return out
+    }
+
+    /// argv of a process (KERN_PROCARGS2: argc, exec path padded to 8 bytes, then the arguments).
+    static func args(_ pid: Int32) -> [String]? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return nil }
+        var buf = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0, size > 4 else { return nil }
+        let argc = Int(buf.withUnsafeBytes { $0.load(as: Int32.self) })
+        var i = 4
+        while i < size, buf[i] != 0 { i += 1 }          // exec path
+        // Skipping every NUL would also eat an empty argv[0] and shift the environment into argv.
+        i = 4 + (i + 1 - 4 + 7) / 8 * 8
+        var out: [String] = []
+        while out.count < argc, i < size {
+            var j = i
+            while j < size, buf[j] != 0 { j += 1 }
+            out.append(String(decoding: buf[i..<j], as: UTF8.self))
+            i = j + 1
+        }
+        return out
     }
 
     /// Bash tool commands, background ones included, start detached in a session of their own;

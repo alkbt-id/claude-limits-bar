@@ -195,6 +195,7 @@ private struct LiveSessionsView: View {
                         .buttonStyle(.plain)
                         .focusEffectDisabled()
                         .help("Перейти к сессии — \(Self.hostName(s))")
+                    nested(s)
                 }
             }
         }
@@ -216,6 +217,31 @@ private struct LiveSessionsView: View {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+    }
+
+    /// Subagents and background commands of a session, indented under its row.
+    @ViewBuilder
+    private func nested(_ s: LiveSession) -> some View {
+        if s.agents + s.commands > 0 {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(s.agentNames.enumerated()), id: \.offset) { _, name in
+                    nestedRow("person.crop.circle.badge.clock", name, font: .caption)
+                }
+                ForEach(Array(s.commandLines.enumerated()), id: \.offset) { _, line in
+                    nestedRow("terminal", line, font: .system(.caption, design: .monospaced))
+                }
+            }
+            .padding(.leading, 30).padding(.bottom, 4)
+        }
+    }
+
+    private func nestedRow(_ icon: String, _ text: String, font: Font) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: icon).font(.caption2).frame(width: 14)
+            Text(text).font(font).lineLimit(1).truncationMode(.tail)
+        }
+        .foregroundStyle(.secondary)
+        .help(text)
     }
 
     /// Orange while the session waits for you and hasn't been looked at; gray once read.

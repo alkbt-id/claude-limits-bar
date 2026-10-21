@@ -123,10 +123,10 @@ enum Snapshot {
         }
 
         func live(_ title: String, _ project: String, _ host: LiveSession.Host, _ state: LiveSession.State,
-                  ago: TimeInterval, agents: Int = 0, commands: Int = 0) -> LiveSession {
+                  ago: TimeInterval, agents: [String] = [], commands: [String] = []) -> LiveSession {
             LiveSession(id: UUID().uuidString, pid: 0, title: title, cwd: "/Users/demo/code/\(project)",
                         entrypoint: host == .vscode(bundleID: "com.microsoft.VSCode") ? "claude-vscode" : "cli",
-                        state: state, since: now.addingTimeInterval(-ago), agents: agents, commands: commands,
+                        state: state, since: now.addingTimeInterval(-ago), agentNames: agents, commandLines: commands,
                         host: host, hostPID: nil, tty: nil)
         }
         let vscode = LiveSession.Host.vscode(bundleID: "com.microsoft.VSCode")
@@ -134,8 +134,9 @@ enum Snapshot {
             live("Рефакторинг API платежей", "payments-api", vscode, .question(plan: false), ago: 120),
             live("Миграция на Swift 6", "ios-app", .terminal(bundleID: "com.googlecode.iterm2"),
                  .permission(detail: "dialog open", sure: true), ago: 50),
-            live("Разбор флаки-тестов CI", "backend", vscode, .working(tool: "Bash"), ago: 300, agents: 2, commands: 1),
-            live("Новый онбординг", "web-app", .desktop, .background, ago: 600, agents: 1),
+            live("Разбор флаки-тестов CI", "backend", vscode, .working(tool: "Bash"), ago: 300,
+                 agents: ["Ревью диффа", "Поиск флаки-тестов"], commands: ["npm test -- --watch"]),
+            live("Новый онбординг", "web-app", .desktop, .background, ago: 600, agents: ["Сбор метрик онбординга"]),
             live("Документация SDK", "sdk", vscode, .idle, ago: 180),
             live("Ревью PR #482", "web-app", vscode, .idle, ago: 2400),
         ]
