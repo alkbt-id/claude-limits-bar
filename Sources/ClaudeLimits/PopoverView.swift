@@ -4,6 +4,7 @@ import AppKit
 struct PopoverView: View {
     @EnvironmentObject var model: AppModel
     static let width: CGFloat = 540
+    @StateObject private var scroller = ScrollerInset()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,7 +29,10 @@ struct PopoverView: View {
             Divider()
             footer.padding(.horizontal, 16).padding(.vertical, 10)
         }
-        .frame(width: Self.width, height: 760)
+        .frame(width: Self.width + scroller.width, height: 760)
+        .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+            scroller.width = ScrollerInset.current()
+        }
     }
 
     private var footer: some View {
@@ -49,6 +53,17 @@ struct PopoverView: View {
             .help("Обновить сейчас")
             Button("Выход") { NSApp.terminate(nil) }
         }
+    }
+}
+
+/// Always-visible scroll bars (a mouse is connected, or the system setting says so) take their width
+/// from the content; the panel grows by it so the blocks keep their layout. Overlay scroll bars take none.
+final class ScrollerInset: ObservableObject {
+    @Published var width = ScrollerInset.current()
+
+    static func current() -> CGFloat {
+        let style = NSScroller.preferredScrollerStyle
+        return style == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: style) : 0
     }
 }
 

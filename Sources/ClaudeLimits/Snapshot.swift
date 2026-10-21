@@ -17,8 +17,8 @@ enum Snapshot {
 
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let suffix = appearance == .aqua ? "light" : "dark"
-            await render(PopoverView(), model: model, appearance: appearance, height: 760,
-                         to: dir.appendingPathComponent("panel-\(suffix).png"))
+            await render(PopoverView(), model: model, appearance: appearance, width: PopoverView.width + ScrollerInset.current(),
+                         height: 760, to: dir.appendingPathComponent("panel-\(suffix).png"))
             // Each block on its own, at its natural height, for the README.
             for part in [PanelPart.Kind.sessions, .usage, .plan] {
                 await render(PanelPart(kind: part).padding(16), model: model, appearance: appearance, height: nil,
@@ -35,12 +35,13 @@ enum Snapshot {
     }
 
     /// Renders a view in a borderless window; `height` nil takes the view's own height.
-    private static func render<V: View>(_ view: V, model: AppModel, appearance: NSAppearance.Name, height: CGFloat?, to url: URL) async {
+    private static func render<V: View>(_ view: V, model: AppModel, appearance: NSAppearance.Name, width: CGFloat = PopoverView.width,
+                                        height: CGFloat?, to url: URL) async {
         let host = NSHostingView(rootView: view.environmentObject(model)
-            .frame(width: PopoverView.width)
+            .frame(width: width)
             .background(Color(nsColor: .windowBackgroundColor)))
         host.appearance = NSAppearance(named: appearance)
-        host.frame = NSRect(x: 0, y: 0, width: PopoverView.width, height: height ?? host.fittingSize.height)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: height ?? host.fittingSize.height)
         let win = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         win.appearance = NSAppearance(named: appearance)
         win.backgroundColor = appearance == .aqua ? .white : NSColor(white: 0.16, alpha: 1)
