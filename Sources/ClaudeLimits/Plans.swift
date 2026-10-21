@@ -1,8 +1,9 @@
 import Foundation
 
 /// Subscription plans and their limits measured in Pro units.
+/// Team seats are compared only with each other: a member can't move to a personal plan.
 enum Plan: String, CaseIterable, Identifiable, Codable {
-    case pro, max5, max20
+    case pro, max5, max20, teamStandard, teamPremium
 
     var id: String { rawValue }
 
@@ -11,41 +12,57 @@ enum Plan: String, CaseIterable, Identifiable, Codable {
         case .pro: return "Pro"
         case .max5: return "Max 5x"
         case .max20: return "Max 20x"
+        case .teamStandard: return "Team Standard"
+        case .teamPremium: return "Team Premium"
         }
     }
 
+    /// Monthly billing; Team seats are $20 and $100 a month when billed annually.
     var price: Int {
         switch self {
         case .pro: return 20
         case .max5: return 100
         case .max20: return 200
+        case .teamStandard: return 25
+        case .teamPremium: return 125
         }
     }
 
-    /// 5-hour window size: Anthropic publishes 5x and 20x of Pro.
+    var isTeam: Bool { self == .teamStandard || self == .teamPremium }
+
+    /// Plans to compare with: personal plans, or the Team seats.
+    var lineup: [Plan] { Self.allCases.filter { $0.isTeam == isTeam } }
+
+    /// 5-hour window size: Anthropic publishes 5x and 20x of Pro for Max, 1.25x and 6.25x for Team seats.
     var session: Double {
         switch self {
         case .pro: return 1
         case .max5: return 5
         case .max20: return 20
+        case .teamStandard: return 1.25
+        case .teamPremium: return 6.25
         }
     }
 
     /// Weekly limit size. Anthropic publishes no ratio; third-party trackers measure Max 20x
     /// at about 10x Pro per week, so the range runs from that measurement to the nominal 20x.
+    /// Team Premium is sold as "5x more usage than Standard", taken for the week as well.
     var weekly: ClosedRange<Double> {
         switch self {
         case .pro: return 1...1
         case .max5: return 5...5
         case .max20: return 10...20
+        case .teamStandard: return 1.25...1.25
+        case .teamPremium: return 6.25...6.25
         }
     }
 
     /// Plan from the credentials Claude Code stores: `rateLimitTier` like "default_claude_max_20x",
-    /// `subscriptionType` like "pro" or "max".
+    /// `subscriptionType` like "pro", "max" or "team". A Team Premium seat reports the "max_5x" tier.
     init?(tier: String?, subscription: String?) {
         let t = (tier ?? "").lowercased(), s = (subscription ?? "").lowercased()
-        if t.contains("20x") { self = .max20 }
+        if s == "team" { self = t.contains("max_5x") || t.contains("premium") ? .teamPremium : .teamStandard }
+        else if t.contains("20x") { self = .max20 }
         else if t.contains("5x") { self = .max5 }
         else if t.contains("pro") || s == "pro" { self = .pro }
         else { return nil }
@@ -110,7 +127,7 @@ struct PlanReport {
         from = (five + week).map { $0.last }.min() ?? now
         fiveWindows = five.count
         capped = (five + week).contains { $0.peak >= 100 }
-        fits = Plan.allCases.map { plan in
+        fits = current.lineup.map { plan in
             let f = five.map { plan.session($0.peak, from: $0.plan ?? current) }
             let w = week.map { plan.weekly($0.peak, from: $0.plan ?? current) }
             return Fit(plan: plan,

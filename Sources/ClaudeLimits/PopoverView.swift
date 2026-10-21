@@ -305,7 +305,7 @@ private struct LiveSessionsView: View {
     }
 }
 
-// MARK: - Plan fit: recorded windows replayed on Pro / Max 5x / Max 20x
+// MARK: - Plan fit: recorded windows replayed on Pro / Max 5x / Max 20x, or on the Team seats
 
 private struct PlanPicker: View {
     @EnvironmentObject var model: AppModel
@@ -313,7 +313,9 @@ private struct PlanPicker: View {
     var body: some View {
         Picker("", selection: $model.planChoice) {
             Text("Авто" + (model.detectedPlan.map { " (\($0.title))" } ?? "")).tag(Plan?.none)
-            ForEach(Plan.allCases) { Text($0.title).tag(Plan?.some($0)) }
+            ForEach(Plan.allCases.filter { !$0.isTeam }) { Text($0.title).tag(Plan?.some($0)) }
+            Divider()
+            ForEach(Plan.allCases.filter(\.isTeam)) { Text($0.title).tag(Plan?.some($0)) }
         }
         .labelsHidden().pickerStyle(.menu).controlSize(.small).fixedSize()
         .help("Ваш тариф")
@@ -361,7 +363,7 @@ private struct PlanFitView: View {
                 let w = g.size.width
                 ZStack(alignment: .leading) {
                     HStack(spacing: 3) {
-                        ForEach(Plan.allCases) { p in
+                        ForEach(r.current.lineup) { p in
                             RoundedRectangle(cornerRadius: 4)
                                 .fill(LinearGradient(colors: [0, 0.5, 1].map { Palette.color($0).opacity(0.3) },
                                                      startPoint: .leading, endPoint: .trailing))
@@ -383,7 +385,7 @@ private struct PlanFitView: View {
             }
             .frame(height: 16)
             HStack(spacing: 3) {
-                ForEach(Plan.allCases) { p in
+                ForEach(r.current.lineup) { p in
                     Text("\(p.title) · $\(p.price)")
                         .font(.caption2.weight(p == r.current ? .bold : .regular))
                         .foregroundStyle(p == r.current ? .primary : .secondary)
@@ -408,14 +410,16 @@ private struct PlanFitView: View {
                 }
                 Text("неделя: \(pct(f.week))").foregroundStyle(Palette.color(f.week.upperBound / 100))
                     .frame(width: 118, alignment: .trailing)
-                    .help("Недельное соотношение тарифов не публикуется: для Max 20x взято 10–20× Pro, отсюда диапазон")
+                    .help(r.current.isTeam
+                          ? "Недельные лимиты мест Team не публикуются: взято то же соотношение, что для 5 часов, Premium = 5× Standard"
+                          : "Недельное соотношение тарифов не публикуется: для Max 20x взято 10–20× Pro, отсюда диапазон")
             }
             .font(.caption.monospacedDigit())
         }
     }
 
     private func verdict(_ r: PlanReport) -> String {
-        guard let best = r.cheapest else { return "Не хватает даже Max 20x" }
+        guard let best = r.cheapest else { return "Не хватает даже \(r.fits.last!.plan.title)" }
         let maybe = r.fits.first { $0.fiveOver == 0 && $0.week.lowerBound < 100 }?.plan
         var text: String
         if best.price < r.current.price {
