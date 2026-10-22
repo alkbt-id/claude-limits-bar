@@ -11,6 +11,14 @@ enum Navigator {
         "com.todesktop.230313mzl4w4u92": "cursor",
         "com.exafunction.windsurf": "windsurf",
     ]
+    /// VS Code's application support folder per bundle id: its logs map extension hosts to windows.
+    static let vscodeDataDirs = [
+        "com.microsoft.VSCode": "Code",
+        "com.microsoft.VSCodeInsiders": "Code - Insiders",
+        "com.vscodium": "VSCodium",
+        "com.todesktop.230313mzl4w4u92": "Cursor",
+        "com.exafunction.windsurf": "Windsurf",
+    ]
     static let desktopBundleID = "com.anthropic.claudefordesktop"
     static let terminalBundleIDs: Set<String> = [
         "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "dev.warp.Warp-Stable",
@@ -58,15 +66,6 @@ extension Navigator {
         Log.write("open \(url.absoluteString)")
         NSWorkspace.shared.open(url)
     }
-
-    /// VS Code's application support folder per bundle id: its logs map extension hosts to windows.
-    static let vscodeDataDirs = [
-        "com.microsoft.VSCode": "Code",
-        "com.microsoft.VSCodeInsiders": "Code - Insiders",
-        "com.vscodium": "VSCodium",
-        "com.todesktop.230313mzl4w4u92": "Cursor",
-        "com.exafunction.windsurf": "Windsurf",
-    ]
 
     /// VS Code window id hosting the session. The extension starts `claude` from the window's extension
     /// host, and each window logs "Started local extension host with pid N." to

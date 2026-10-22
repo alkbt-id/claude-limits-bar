@@ -91,7 +91,7 @@ final class LiveSessionScanner {
                 return t
             }
             let procStart = Proc.startTime(proc)
-            let agentNames = tail.map { Self.runningAgents(transcript: $0.url, since: procStart) } ?? []
+            let agentNames = tail.map { Self.runningAgents(of: $0, since: procStart) } ?? []
             let commandLines = Proc.children(pid).filter { Proc.isCommand($0) }.map { Proc.commandLine($0) }
             let agents = agentNames.count, commands = commandLines.count
 
@@ -156,9 +156,11 @@ final class LiveSessionScanner {
 
     /// Subagents of this session that have not finished: `<project>/<session>/subagents/agent-*.meta.json`
     /// without `"finished": true`, whose transcript was written by this process recently.
+    /// Foreground subagents (a skill's, or an Agent call the session waits on) never get `finished`:
+    /// they run only while the session waits for the tool call that started them.
     /// Returns their descriptions, oldest first.
-    private static func runningAgents(transcript: URL, since start: Date?) -> [String] {
-        let dir = transcript.deletingPathExtension().appendingPathComponent("subagents")
+    private static func runningAgents(of tail: TranscriptTail, since start: Date?) -> [String] {
+        let dir = tail.url.deletingPathExtension().appendingPathComponent("subagents")
         guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
         let fresh = Date().addingTimeInterval(-10 * 60)
         var found: [(Date, String)] = []
@@ -166,11 +168,15 @@ final class LiveSessionScanner {
             let log = dir.appendingPathComponent(f.lastPathComponent.replacingOccurrences(of: ".meta.json", with: ".jsonl"))
             guard let m = try? log.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
                   m > fresh, m > (start ?? .distantPast) else { continue }
-            guard let d = try? Data(contentsOf: f), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
-            if (o["finished"] as? Bool) != true {
-                let name = (o["description"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? o["agentType"] as? String ?? "агент"
-                found.append((m, name))
+            guard let d = try? Data(contentsOf: f), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  (o["finished"] as? Bool) != true else { continue }
+            if o["requestShape"] as? String == "foreground" {
+                // A nested subagent's call is in its parent's transcript: then the session waits on its own call.
+                let call = o["parentAgentId"] == nil ? o["toolUseId"] as? String : nil
+                guard call.map({ tail.pending[$0] != nil }) ?? !tail.pending.isEmpty else { continue }
             }
+            let name = (o["description"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? o["agentType"] as? String ?? "агент"
+            found.append((m, name))
         }
         return found.sorted { $0.0 < $1.0 }.map(\.1)
     }
