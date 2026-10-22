@@ -60,7 +60,7 @@ extension Navigator {
     }
 
     /// VS Code's application support folder per bundle id: its logs map extension hosts to windows.
-    private static let vscodeDataDirs = [
+    static let vscodeDataDirs = [
         "com.microsoft.VSCode": "Code",
         "com.microsoft.VSCodeInsiders": "Code - Insiders",
         "com.vscodium": "VSCodium",

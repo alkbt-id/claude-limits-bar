@@ -62,6 +62,7 @@ final class LiveSessionScanner {
     private var tails: [String: TranscriptTail] = [:]
     private var transcriptPaths: [String: URL] = [:]
     private var hosts: [Int32: (LiveSession.Host, Int32?)] = [:]
+    private let extensionLogs = ExtensionLogs()
 
     /// A tool call that hangs this long without transcript writes, commands or subagents is taken for a permission prompt.
     static let promptGuess: TimeInterval = 10
@@ -98,7 +99,8 @@ final class LiveSessionScanner {
             let statusAt = (o["statusUpdatedAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
             let entrypoint = o["entrypoint"] as? String
             let (state, since) = Self.state(status: status, waitingFor: o["waitingFor"] as? String, statusAt: statusAt,
-                                            tail: tail, agents: agents, commands: commands, reportsPrompts: entrypoint == "cli")
+                                            tail: tail, agents: agents, commands: commands, reportsPrompts: entrypoint == "cli",
+                                            startedTools: extensionLogs.update)
 
             if hosts[pid] == nil { hosts[pid] = Self.host(of: pid, entrypoint: entrypoint) }
             let (host, hostPID) = hosts[pid]!
@@ -116,7 +118,8 @@ final class LiveSessionScanner {
     // MARK: State
 
     private static func state(status: String?, waitingFor: String?, statusAt: Date?, tail: TranscriptTail?,
-                              agents: Int, commands: Int, reportsPrompts: Bool) -> (LiveSession.State, Date?) {
+                              agents: Int, commands: Int, reportsPrompts: Bool,
+                              startedTools: () -> Set<String>) -> (LiveSession.State, Date?) {
         // The terminal UI reports its own dialogs, permission prompts included.
         if status == "waiting" { return (.permission(detail: waitingFor, sure: true), statusAt) }
         guard let t = tail else {
@@ -141,7 +144,11 @@ final class LiveSessionScanner {
             // A tool call that hangs without transcript writes, commands or subagents most likely waits for one.
             if !reportsPrompts, let tool, tool.name != "Agent", tool.name != "Task", commands == 0, agents == 0,
                Date().timeIntervalSince(t.modified) > promptGuess {
-                return (.permission(detail: tool.name, sure: false), tool.ts)
+                // Unless the VS Code extension log shows a call already started: long MCP calls and fetches hang the same way.
+                let started = startedTools()
+                if !t.pending.keys.contains(where: started.contains) {
+                    return (.permission(detail: tool.name, sure: false), tool.ts)
+                }
             }
             return (.working(tool: tool?.name), t.turnStart ?? t.lastAt)
         }
@@ -284,6 +291,72 @@ final class TranscriptTail {
             }
             lastAt = ts
         default: break
+        }
+    }
+}
+
+/// Tool calls that VS Code sessions have started. The Claude Code extension runs `claude` with `--debug-to-stderr`
+/// and copies its output to `logs/<launch>/window<id>/exthost/Anthropic.claude-code/*.log` in the app's support
+/// folder, `[Stall] tool_dispatch_start tool=<name> toolUseId=<id>` included: written once a call got its permission.
+/// Logs are read incrementally, only those written in the last day.
+final class ExtensionLogs {
+    private var offsets: [URL: UInt64] = [:]
+    private var started: [String: Date] = [:]   // tool call id → when seen
+
+    private static let marker = Data("tool_dispatch_start ".utf8)
+    private static let idKey = Data("toolUseId=".utf8)
+    private static let chunk = 4 << 20
+
+    /// Reads what the logs gained since the last call; returns the ids of started tool calls.
+    func update() -> Set<String> {
+        let fm = FileManager.default
+        let support = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        let dayAgo = Date().addingTimeInterval(-86400)
+        var seen = Set<URL>()
+        for app in Set(Navigator.vscodeDataDirs.values) {
+            let logs = support.appendingPathComponent(app).appendingPathComponent("logs")
+            for launch in (try? fm.contentsOfDirectory(atPath: logs.path)) ?? [] {
+                let dir = logs.appendingPathComponent(launch)
+                for w in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where w.hasPrefix("window") {
+                    let ext = dir.appendingPathComponent(w).appendingPathComponent("exthost/Anthropic.claude-code")
+                    for f in (try? fm.contentsOfDirectory(atPath: ext.path)) ?? [] where f.hasSuffix(".log") {
+                        let url = ext.appendingPathComponent(f)
+                        guard let a = try? fm.attributesOfItem(atPath: url.path),
+                              let m = a[.modificationDate] as? Date, m > dayAgo else { continue }
+                        seen.insert(url)
+                        read(url, size: (a[.size] as? NSNumber)?.uint64Value ?? 0)
+                    }
+                }
+            }
+        }
+        offsets = offsets.filter { seen.contains($0.key) }
+        started = started.filter { $0.value > dayAgo }
+        return Set(started.keys)
+    }
+
+    private func read(_ url: URL, size: UInt64) {
+        var offset = offsets[url] ?? 0
+        if size < offset { offset = 0 }
+        guard size > offset, let h = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? h.close(); offsets[url] = offset }
+        let now = Date()
+        // In chunks: a busy window logs tens of megabytes a day.
+        while (try? h.seek(toOffset: offset)) != nil, let data = try? h.read(upToCount: Self.chunk), !data.isEmpty {
+            // Only whole lines: the last one may still be being written. A full chunk without one is a huge line to skip.
+            guard let lastNL = data.lastIndex(of: 0x0A) else {
+                if data.count < Self.chunk { return }
+                offset += UInt64(data.count)
+                continue
+            }
+            var from = data.startIndex
+            while let m = data.range(of: Self.marker, in: from..<lastNL) {
+                let lineEnd = data[m.upperBound...].firstIndex(of: 0x0A) ?? lastNL
+                from = lineEnd
+                guard let k = data.range(of: Self.idKey, in: m.upperBound..<lineEnd) else { continue }
+                let end = data[k.upperBound..<lineEnd].firstIndex(of: 0x20) ?? lineEnd
+                started[String(decoding: data[k.upperBound..<end], as: UTF8.self)] = now
+            }
+            offset += UInt64(lastNL - data.startIndex + 1)
         }
     }
 }
