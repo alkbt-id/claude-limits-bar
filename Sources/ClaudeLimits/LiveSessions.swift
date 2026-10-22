@@ -271,6 +271,9 @@ final class TranscriptTail {
         case "last-prompt": lastPrompt = (o["lastPrompt"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? lastPrompt
         case "assistant", "user":
             if o["isSidechain"] as? Bool == true || o["isMeta"] as? Bool == true { return }
+            // A background task notice that came when no turn could take it (after the turn ended, or on resume)
+            // is only recorded: no reply follows it.
+            if o["queueTranscriptOnly"] as? Bool == true { return }
             guard let msg = o["message"] as? [String: Any] else { return }
             let ts = (o["timestamp"] as? String).flatMap(UsageAPI.parseDate) ?? Date()
             let blocks = msg["content"] as? [[String: Any]] ?? []
