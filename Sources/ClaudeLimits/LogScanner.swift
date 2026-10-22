@@ -14,7 +14,8 @@ struct SessionUsage: Identifiable {
     }
 }
 
-final class LogScanner {
+/// Keeps per-file results between scans. Unchecked Sendable: call `scan` from one serial queue only.
+final class LogScanner: @unchecked Sendable {
     private struct FileResult {
         var mtime: Date
         var size: Int

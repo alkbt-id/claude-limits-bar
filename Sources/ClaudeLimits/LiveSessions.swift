@@ -56,8 +56,9 @@ struct LiveSession: Identifiable, Equatable {
 }
 
 /// Reads ~/.claude/sessions/<pid>.json (one file per live Claude Code process), follows each session's
-/// transcript incrementally and inspects the process tree. Call `scan` from one background queue.
-final class LiveSessionScanner {
+/// transcript incrementally and inspects the process tree. Call `scan` from one background queue:
+/// the state it keeps between scans is unguarded, hence unchecked Sendable.
+final class LiveSessionScanner: @unchecked Sendable {
     private let claudeDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
     private var tails: [String: TranscriptTail] = [:]
     private var transcriptPaths: [String: URL] = [:]

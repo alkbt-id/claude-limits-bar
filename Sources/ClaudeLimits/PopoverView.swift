@@ -3,7 +3,7 @@ import AppKit
 
 struct PopoverView: View {
     @EnvironmentObject var model: AppModel
-    static let width: CGFloat = 540
+    nonisolated static let width: CGFloat = 540
     @StateObject private var scroller = ScrollerInset()
 
     var body: some View {
