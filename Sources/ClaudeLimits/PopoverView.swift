@@ -507,6 +507,7 @@ private struct HeatmapView: View {
                         }
                         Text(total > 0 ? unit(total) : "—")
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.7)
                             .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                 }

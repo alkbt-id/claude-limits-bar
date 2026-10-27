@@ -18,7 +18,11 @@ final class StatusItemController: NSObject {
 
         popover.behavior = .transient
         popover.animates = true
-        popover.contentViewController = NSHostingController(rootView: PopoverView().environmentObject(model))
+        let host = NSHostingController(rootView: PopoverView().environmentObject(model))
+        // The size is set before each show instead: a size SwiftUI reports later, after the popover
+        // is placed, can leave it pushed up past the top of the screen.
+        host.sizingOptions = []
+        popover.contentViewController = host
 
         if let button = item.button {
             button.target = self
@@ -40,10 +44,14 @@ final class StatusItemController: NSObject {
         } else {
             model.rescanLogs()
             // A panel taller than the screen below the menu bar would be pushed up over it, its top cut off.
-            if let screen = button.window?.screen ?? NSScreen.main {
-                model.panelHeight = min(PopoverView.height, screen.visibleFrame.height - 30)
-            }
+            let screen = button.window?.screen ?? NSScreen.main
+            if let screen { model.panelHeight = min(PopoverView.height, screen.visibleFrame.height - 30) }
+            popover.contentSize = NSSize(width: PopoverView.width + ScrollerInset.current(), height: model.panelHeight)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            let frame = popover.contentViewController?.view.window?.frame
+            if let frame, let screen, frame.maxY > screen.visibleFrame.maxY + 1 {
+                Log.write("panel off screen: panel \(frame), button \(button.window?.frame ?? .zero), screen \(screen.frame), visible \(screen.visibleFrame), screens \(NSScreen.screens.map(\.frame))")
+            }
             popover.contentViewController?.view.window?.makeKey()
             NSApp.activate(ignoringOtherApps: true)
         }
