@@ -138,25 +138,32 @@ private struct LimitRows: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
-            row("Сессия · 5 часов", model.snapshot?.fiveHour)
-            row("Неделя", model.snapshot?.sevenDay)
+        VStack(alignment: .leading, spacing: 10) {
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                row("Сессия · 5 часов", model.snapshot?.fiveHour, length: LimitWindow.fiveHourLength, skipWeekends: false)
+                row("Неделя", model.snapshot?.sevenDay, length: LimitWindow.sevenDayLength, skipWeekends: model.skipWeekends)
+            }
+            Toggle("Недельный темп без выходных", isOn: $model.skipWeekends)
+                .toggleStyle(.checkbox).font(.callout).foregroundStyle(.secondary)
+                .help("Цвет недельного лимита считается так, будто тратить его можно только в будни")
         }
     }
 
-    private func row(_ title: String, _ window: LimitWindow?) -> some View {
+    private func row(_ title: String, _ window: LimitWindow?, length: TimeInterval, skipWeekends: Bool) -> some View {
         let shown = window?.current(at: model.now)
         let frac = (shown?.utilization ?? 0) / 100
+        // Colored by pace: how much is left for the time left, not by the share spent.
+        let strain = shown?.strain(at: model.now, length: length, skipWeekends: skipWeekends) ?? 0
         return GridRow(alignment: .center) {
             Text(title).font(.callout).foregroundStyle(.secondary)
             Text(Fmt.percent(shown?.utilization))
                 .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
-                .foregroundStyle(window == nil ? Color.secondary : Palette.color(frac))
+                .foregroundStyle(window == nil ? Color.secondary : Palette.color(strain))
                 .gridColumnAlignment(.trailing)
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.secondary.opacity(0.2))
-                    Capsule().fill(Palette.color(frac)).frame(width: max(6, g.size.width * min(frac, 1)))
+                    Capsule().fill(Palette.color(strain)).frame(width: max(6, g.size.width * min(frac, 1)))
                 }
             }
             .frame(width: 130, height: 6)

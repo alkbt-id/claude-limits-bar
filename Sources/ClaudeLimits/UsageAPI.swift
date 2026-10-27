@@ -11,6 +11,38 @@ struct LimitWindow: Codable, Equatable {
         if let r = resetsAt, r <= now { return LimitWindow(utilization: 0, resetsAt: nil) }
         return self
     }
+
+    static let fiveHourLength: TimeInterval = 5 * 3600
+    static let sevenDayLength: TimeInterval = 7 * 86400
+
+    /// How tight the limit is for the time left, 0 (relaxed) ... 1 (spent):
+    /// the rate the rest of the limit allows, against the even rate of 100% over `length`.
+    /// Even pace or faster gives 0, half the even rate gives 0.5.
+    /// With `skipWeekends` only weekday time counts, both in the window and in what is left of it.
+    func strain(at now: Date, length: TimeInterval, skipWeekends: Bool = false) -> Double {
+        let left = 1 - utilization / 100
+        guard left > 0 else { return 1 }
+        guard let r = resetsAt else { return utilization / 100 }
+        let start = r.addingTimeInterval(-length), from = min(max(now, start), r)
+        let span = skipWeekends ? Self.weekdayTime(from: start, to: r) : length
+        let rest = skipWeekends ? Self.weekdayTime(from: from, to: r) : r.timeIntervalSince(from)
+        guard span > 0 else { return utilization / 100 }
+        let timeLeft = min(max(rest, 1), span) / span
+        return min(max(1 - left / timeLeft, 0), 1)
+    }
+
+    /// Seconds between two moments that fall outside the weekend.
+    static func weekdayTime(from a: Date, to b: Date, calendar cal: Calendar = .current) -> TimeInterval {
+        var total: TimeInterval = 0
+        var t = a
+        while t < b {
+            guard let next = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: t)) else { break }
+            let end = min(next, b)
+            if !cal.isDateInWeekend(t) { total += end.timeIntervalSince(t) }
+            t = end
+        }
+        return total
+    }
 }
 
 struct UsageSnapshot: Codable, Equatable {

@@ -29,6 +29,10 @@ final class AppModel: ObservableObject {
         didSet { if store.isPersistent { UserDefaults.standard.set(detectedPlan?.rawValue, forKey: "detectedPlan") } }
     }
     var plan: Plan? { planChoice ?? detectedPlan }
+    /// Weekly pace counts weekdays only: the weekly budget is meant for the working week.
+    @Published var skipWeekends = UserDefaults.standard.bool(forKey: "skipWeekends") {
+        didSet { if store.isPersistent { UserDefaults.standard.set(skipWeekends, forKey: "skipWeekends") } }
+    }
 
     let store: SampleStore
     private let scanner = LogScanner()
