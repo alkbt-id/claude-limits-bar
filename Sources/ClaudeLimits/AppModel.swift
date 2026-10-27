@@ -10,6 +10,8 @@ final class AppModel: ObservableObject {
     @Published var now = Date()
     @Published var loading = false
     @Published var copiedSession: String?
+    /// Panel height: the full design height, or less on a screen too short for it.
+    @Published var panelHeight = PopoverView.height
     /// Running Claude Code sessions, rescanned every few seconds.
     @Published var live: [LiveSession] = []
     /// When each session was last looked at (clicked or "all read"); a state entered later wants attention.

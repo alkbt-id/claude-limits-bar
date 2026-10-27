@@ -4,6 +4,7 @@ import AppKit
 struct PopoverView: View {
     @EnvironmentObject var model: AppModel
     nonisolated static let width: CGFloat = 540
+    nonisolated static let height: CGFloat = 760
     @StateObject private var scroller = ScrollerInset()
 
     var body: some View {
@@ -29,7 +30,7 @@ struct PopoverView: View {
             Divider()
             footer.padding(.horizontal, 16).padding(.vertical, 10)
         }
-        .frame(width: Self.width + scroller.width, height: 760)
+        .frame(width: Self.width + scroller.width, height: model.panelHeight)
         .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
             scroller.width = ScrollerInset.current()
         }

@@ -18,7 +18,7 @@ enum Snapshot {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let suffix = appearance == .aqua ? "light" : "dark"
             await render(PopoverView(), model: model, appearance: appearance, width: PopoverView.width + ScrollerInset.current(),
-                         height: 760, to: dir.appendingPathComponent("panel-\(suffix).png"))
+                         height: PopoverView.height, to: dir.appendingPathComponent("panel-\(suffix).png"))
             // Each block on its own, at its natural height, for the README.
             for part in [PanelPart.Kind.sessions, .usage, .plan] {
                 await render(PanelPart(kind: part).padding(16), model: model, appearance: appearance, height: nil,

@@ -39,6 +39,10 @@ final class StatusItemController: NSObject {
             popover.performClose(nil)
         } else {
             model.rescanLogs()
+            // A panel taller than the screen below the menu bar would be pushed up over it, its top cut off.
+            if let screen = button.window?.screen ?? NSScreen.main {
+                model.panelHeight = min(PopoverView.height, screen.visibleFrame.height - 30)
+            }
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
             NSApp.activate(ignoringOtherApps: true)

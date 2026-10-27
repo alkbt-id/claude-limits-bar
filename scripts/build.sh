@@ -3,8 +3,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-swift build -c release
-BIN="$(swift build -c release --show-bin-path)/ClaudeLimits"
+# Some Swift 6.4 setups fail in the new build system ("Unknown error parsing property list");
+# the old one still builds the same binary.
+FLAGS=(-c release)
+if ! swift build "${FLAGS[@]}"; then
+    echo "Retrying with the native build system"
+    FLAGS+=(--build-system native)
+    swift build "${FLAGS[@]}"
+fi
+BIN="$(swift build "${FLAGS[@]}" --show-bin-path)/ClaudeLimits"
 APP="build/Claude Limits.app"
 
 rm -rf "$APP"
