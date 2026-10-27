@@ -15,12 +15,18 @@ enum Diagnostics {
         out.append("\n== Логины Claude Code (лучший первым)")
         let all = UsageAPI.allCredentials()
         if all.isEmpty { out.append("не найдено ни одного") }
-        for c in all {
-            out.append("- \(c.summary)")
-            out.append("  проверка: \(await probe(c))")
+        for c in all { out.append("- \(c.summary)") }
+
+        out.append("\n== Запущенные сессии Claude Code")
+        let found = Route.scanClaudeCode().sessions
+        out.append(contentsOf: found.isEmpty ? ["нет"] : found)
+
+        out.append("\n== Пути к API (по порядку, с первым логином)")
+        if let best = all.first {
+            for r in Route.candidates() { out.append("- \(r): \(await probe(best, via: r))") }
         }
 
-        out.append("\n== Прокси")
+        out.append("\n== Системный прокси")
         out.append(contentsOf: proxy())
 
         out.append("\n== Журнал (последние запросы)")
@@ -31,16 +37,16 @@ enum Diagnostics {
         return out.joined(separator: "\n")
     }
 
-    private static func probe(_ c: UsageAPI.Credentials) async -> String {
+    private static func probe(_ c: UsageAPI.Credentials, via route: Route) async -> String {
         do {
-            let s = try await UsageAPI.fetch(with: c)
+            let s = try await UsageAPI.fetch(with: c, via: route)
             return "OK — 5 ч \(Fmt.percent(s.fiveHour?.utilization)), неделя \(Fmt.percent(s.sevenDay?.utilization))"
         } catch UsageError.unauthorized {
             return "отказ — \(UsageAPI.lastFailure ?? "401/403")"
-        } catch let e as URLError {
-            return "сеть: \(e.code.rawValue) \(e.localizedDescription)"
+        } catch UsageError.blocked {
+            return "Anthropic не пускает из этой сети (HTTP 403 Request not allowed)"
         } catch {
-            return (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            return UsageAPI.describe(error)
         }
     }
 

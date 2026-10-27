@@ -471,6 +471,33 @@ enum Proc {
         return out
     }
 
+    /// Environment of a process: the strings KERN_PROCARGS2 holds after argv.
+    static func environment(_ pid: Int32) -> [String: String]? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return nil }
+        var buf = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0, size > 4 else { return nil }
+        let argc = Int(buf.withUnsafeBytes { $0.load(as: Int32.self) })
+        var i = 4
+        while i < size, buf[i] != 0 { i += 1 }
+        i = 4 + (i + 1 - 4 + 7) / 8 * 8
+        var strings: [String] = []
+        while i < size {
+            var j = i
+            while j < size, buf[j] != 0 { j += 1 }
+            if j == i, strings.count >= argc { break }   // the environment ends with an empty string
+            strings.append(String(decoding: buf[i..<j], as: UTF8.self))
+            i = j + 1
+        }
+        var env: [String: String] = [:]
+        for kv in strings.dropFirst(argc) {
+            guard let eq = kv.firstIndex(of: "=") else { continue }
+            env[String(kv[..<eq])] = String(kv[kv.index(after: eq)...])
+        }
+        return env
+    }
+
     /// Bash tool commands, background ones included, start detached in a session of their own;
     /// stdio MCP servers stay in Claude's. The process name doesn't tell: the shell may exec the command.
     static func isCommand(_ pid: Int32) -> Bool {

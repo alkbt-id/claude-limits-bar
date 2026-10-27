@@ -29,6 +29,8 @@ enum UsageError: LocalizedError {
     case rateLimited(retryAfter: TimeInterval?)
     case http(Int)
     case badResponse
+    /// HTTP 403 "Request not allowed": the API refuses the network, not the token (unsupported region).
+    case blocked
 
     var errorDescription: String? {
         switch self {
@@ -37,6 +39,7 @@ enum UsageError: LocalizedError {
         case .rateLimited: return "API временно ограничил частоту запросов (HTTP 429)."
         case .http(let code): return "Ошибка API: HTTP \(code)"
         case .badResponse: return "Не удалось разобрать ответ API"
+        case .blocked: return "Anthropic не принимает запросы из этой сети (HTTP 403 «Request not allowed»), а прокси, через который ходит Claude Code, не найден. Кнопка со стетоскопом внизу покажет, какие пути проверены."
         }
     }
 }
@@ -113,27 +116,52 @@ enum UsageAPI {
                            scopes: oauth["scopes"] as? [String] ?? [])
     }
 
-    /// Tries each login in turn until the endpoint accepts one; 401/403 moves on to the next.
+    /// Tries each route (see `Route.candidates()`) and on it each login, until the endpoint answers.
+    /// A network error or a 403 for the network moves on to the next route; 401/403 for a token, to the next login.
     static func fetch() async throws -> UsageSnapshot {
         let all = allCredentials()
         guard !all.isEmpty else {
             Log.write("no credentials in keychain or ~/.claude/.credentials.json")
             throw UsageError.noCredentials
         }
-        for creds in all {
-            do {
-                let snap = try await fetch(with: creds)
-                if creds.service != lastService {
-                    Log.write("using \(creds.summary)")
-                    lastService = creds.service
+        var routes = Route.candidates()
+        if let last = lastRoute, let i = routes.firstIndex(of: last) { routes.insert(routes.remove(at: i), at: 0) }
+        var failure: Error?
+        for route in routes {
+            for creds in all {
+                do {
+                    let snap = try await fetch(with: creds, via: route)
+                    if creds.service != lastService || route != lastRoute {
+                        Log.write("using \(creds.summary) via \(route)")
+                        lastService = creds.service
+                        lastRoute = route
+                    }
+                    return snap
+                } catch UsageError.unauthorized {
+                    // The API was reached, so this outranks any network failure on other routes.
+                    Log.write("rejected: \(creds.summary)")
+                    failure = UsageError.unauthorized(token: tokens(all))
+                } catch UsageError.blocked {
+                    Log.write("\(route) failed: blocked (HTTP 403 Request not allowed)")
+                    if !(failure is UsageError) { failure = UsageError.blocked }
+                    break
+                } catch let e as URLError {
+                    Log.write("\(route) failed: \(describe(e))")
+                    if failure == nil { failure = e }
+                    break
                 }
-                return snap
-            } catch UsageError.unauthorized {
-                Log.write("rejected: \(creds.summary)")
             }
         }
-        throw UsageError.unauthorized(token: tokens(all))
+        throw failure ?? UsageError.badResponse
     }
+
+    static func describe(_ e: Error) -> String {
+        if let u = e as? URLError { return "\(u.code.rawValue) \(u.localizedDescription)" }
+        return (e as? LocalizedError)?.errorDescription ?? "\(e)"
+    }
+
+    /// Route the last successful poll used; tried first next time.
+    nonisolated(unsafe) private static var lastRoute: Route?
 
     /// All tokens in one string: when none is accepted, the next poll waits until any of them changes.
     static func tokens(_ all: [Credentials]) -> String { all.map(\.token).joined(separator: ",") }
@@ -144,20 +172,21 @@ enum UsageAPI {
     /// Item the last successful poll used, so the log names it once instead of on every poll.
     nonisolated(unsafe) private static var lastService: String?
 
-    static func fetch(with creds: Credentials) async throws -> UsageSnapshot {
+    static func fetch(with creds: Credentials, via route: Route = .system) async throws -> UsageSnapshot {
         let token = creds.token
-        var req = URLRequest(url: endpoint, timeoutInterval: 20)
+        var req = URLRequest(url: endpoint, timeoutInterval: 15)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await route.session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw UsageError.badResponse }
         if http.statusCode != 200 {
             let body = String(decoding: data.prefix(300), as: UTF8.self).replacingOccurrences(of: "\n", with: " ")
             lastFailure = "HTTP \(http.statusCode): \(body)"
             Log.write("HTTP \(http.statusCode), Retry-After \(http.value(forHTTPHeaderField: "Retry-After") ?? "none"), body: \(body)")
         }
+        if http.statusCode == 403, String(decoding: data, as: UTF8.self).contains("Request not allowed") { throw UsageError.blocked }
         if http.statusCode == 401 || http.statusCode == 403 { throw UsageError.unauthorized(token: token) }
         if http.statusCode == 429 {
             throw UsageError.rateLimited(retryAfter: http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init))
