@@ -40,7 +40,9 @@ struct PopoverView: View {
             Toggle("Запускать при входе", isOn: $model.launchAtLogin)
                 .toggleStyle(.checkbox)
             Spacer()
-            if let t = model.snapshot?.fetchedAt {
+            if model.diagnosticsCopied {
+                Text("отчёт скопирован").font(.caption).foregroundStyle(.green)
+            } else if let t = model.snapshot?.fetchedAt {
                 Text("обновлено \(Fmt.time.string(from: t))").font(.caption).foregroundStyle(.secondary)
             }
             Button {
@@ -51,6 +53,13 @@ struct PopoverView: View {
             }
             .disabled(model.loading)
             .help("Обновить сейчас")
+            Button {
+                Task { await model.runDiagnostics() }
+            } label: {
+                Image(systemName: "stethoscope")
+            }
+            .disabled(model.diagnosing)
+            .help("Диагностика: проверить логины и прокси, скопировать отчёт без токенов")
             Button("Выход") { NSApp.terminate(nil) }
         }
     }

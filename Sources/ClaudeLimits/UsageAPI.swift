@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// One rate-limit window as reported by the usage endpoint.
 struct LimitWindow: Codable, Equatable {
@@ -43,44 +44,107 @@ enum UsageError: LocalizedError {
 enum UsageAPI {
     private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
-    /// Reads the OAuth access token and plan that Claude Code keeps in the login keychain.
+    /// Keychain items Claude Code keeps its login in: "Claude Code-credentials", plus one with a
+    /// hash suffix per config directory. Claude Desktop may write the plain one with a token the usage
+    /// endpoint refuses (403), while the terminal CLI keeps a working token under a suffixed name.
+    private static let servicePrefix = "Claude Code-credentials"
+
+    /// Every Claude Code login on this Mac, best first: not expired, then the one expiring last.
+    static func allCredentials() -> [Credentials] {
+        var found = serviceNames().compactMap { name in readKeychain(name).flatMap { parse($0, service: name) } }
+        // Fallback: credentials file used on some setups.
+        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/.credentials.json")
+        if let d = try? Data(contentsOf: file), let c = parse(d, service: "~/.claude/.credentials.json") { found.append(c) }
+        let now = Date()
+        return found.sorted { a, b in
+            let (ea, eb) = (a.expiresAt ?? .distantFuture, b.expiresAt ?? .distantFuture)
+            if (ea > now) != (eb > now) { return ea > now }
+            return ea > eb
+        }
+    }
+
+    /// Names of the Claude Code keychain items. Reads attributes only, so no access prompt.
+    private static func serviceNames() -> [String] {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecMatchLimit as String: kSecMatchLimitAll,
+                                    kSecReturnAttributes as String: true]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let items = result as? [[String: Any]] else { return [servicePrefix] }
+        let names = Set(items.compactMap { $0[kSecAttrService as String] as? String }.filter { $0.hasPrefix(servicePrefix) })
+        return names.isEmpty ? [servicePrefix] : names.sorted()
+    }
+
     /// Uses /usr/bin/security so the keychain item ACL stays the same as for the CLI.
-    static func readCredentials() -> Credentials? {
+    private static func readKeychain(_ service: String) -> Data? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        p.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        p.arguments = ["find-generic-password", "-s", service, "-w"]
         let out = Pipe()
         p.standardOutput = out
         p.standardError = Pipe()
         do { try p.run() } catch { return nil }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        if p.terminationStatus == 0, let creds = parse(data) { return creds }
-
-        // Fallback: credentials file used on some setups.
-        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/.credentials.json")
-        if let d = try? Data(contentsOf: file) { return parse(d) }
-        return nil
+        return p.terminationStatus == 0 ? data : nil
     }
 
     struct Credentials {
+        var service: String
         var token: String
         var plan: Plan?
+        var expiresAt: Date?
+        var scopes: [String]
+
+        /// For the log: where the token came from and what it allows, never the token itself.
+        var summary: String {
+            "\(service) [\(plan?.rawValue ?? "?"), expires \(expiresAt.map { Fmt.dayTime.string(from: $0) } ?? "?"), scopes \(scopes.joined(separator: " "))]"
+        }
     }
 
-    private static func parse(_ data: Data) -> Credentials? {
+    private static func parse(_ data: Data, service: String) -> Credentials? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let oauth = obj["claudeAiOauth"] as? [String: Any],
               let token = oauth["accessToken"] as? String, !token.isEmpty else { return nil }
-        return Credentials(token: token, plan: Plan(tier: oauth["rateLimitTier"] as? String,
-                                                    subscription: oauth["subscriptionType"] as? String))
+        return Credentials(service: service, token: token,
+                           plan: Plan(tier: oauth["rateLimitTier"] as? String,
+                                      subscription: oauth["subscriptionType"] as? String),
+                           expiresAt: (oauth["expiresAt"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) },
+                           scopes: oauth["scopes"] as? [String] ?? [])
     }
 
+    /// Tries each login in turn until the endpoint accepts one; 401/403 moves on to the next.
     static func fetch() async throws -> UsageSnapshot {
-        guard let creds = readCredentials() else {
+        let all = allCredentials()
+        guard !all.isEmpty else {
             Log.write("no credentials in keychain or ~/.claude/.credentials.json")
             throw UsageError.noCredentials
         }
+        for creds in all {
+            do {
+                let snap = try await fetch(with: creds)
+                if creds.service != lastService {
+                    Log.write("using \(creds.summary)")
+                    lastService = creds.service
+                }
+                return snap
+            } catch UsageError.unauthorized {
+                Log.write("rejected: \(creds.summary)")
+            }
+        }
+        throw UsageError.unauthorized(token: tokens(all))
+    }
+
+    /// All tokens in one string: when none is accepted, the next poll waits until any of them changes.
+    static func tokens(_ all: [Credentials]) -> String { all.map(\.token).joined(separator: ",") }
+
+    /// Status and body of the last non-200 answer, for the diagnostics report.
+    nonisolated(unsafe) static var lastFailure: String?
+
+    /// Item the last successful poll used, so the log names it once instead of on every poll.
+    nonisolated(unsafe) private static var lastService: String?
+
+    static func fetch(with creds: Credentials) async throws -> UsageSnapshot {
         let token = creds.token
         var req = URLRequest(url: endpoint, timeoutInterval: 20)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -91,6 +155,7 @@ enum UsageAPI {
         guard let http = resp as? HTTPURLResponse else { throw UsageError.badResponse }
         if http.statusCode != 200 {
             let body = String(decoding: data.prefix(300), as: UTF8.self).replacingOccurrences(of: "\n", with: " ")
+            lastFailure = "HTTP \(http.statusCode): \(body)"
             Log.write("HTTP \(http.statusCode), Retry-After \(http.value(forHTTPHeaderField: "Retry-After") ?? "none"), body: \(body)")
         }
         if http.statusCode == 401 || http.statusCode == 403 { throw UsageError.unauthorized(token: token) }

@@ -31,6 +31,14 @@ MainActor.assumeIsolated {
         }
         RunLoop.main.run()
     }
+    if args.contains("--diagnose") {
+        // Same report as the panel's stethoscope button, printed instead of copied.
+        Task {
+            print(await Diagnostics.report())
+            exit(0)
+        }
+        RunLoop.main.run()
+    }
     if args.contains("--sessions") {
         // Debug: print what the panel's session list would show; `--watch` repeats every 3 s.
         let scanner = LiveSessionScanner()

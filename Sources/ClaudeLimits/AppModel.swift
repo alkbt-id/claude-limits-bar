@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -37,7 +38,7 @@ final class AppModel: ObservableObject {
 
     /// After HTTP 429 no requests go out until this moment.
     private var backoffUntil: Date?
-    /// Token the API rejected with 401: no polls until Claude Code puts a new one in the keychain.
+    /// Tokens the API rejected with 401/403: no polls until Claude Code puts a new one in the keychain.
     private var rejectedToken: String?
 
     init(store: SampleStore = SampleStore()) {
@@ -101,7 +102,7 @@ final class AppModel: ObservableObject {
         if let until = backoffUntil, now < until { return }
         var tokenChanged = false
         if let rejected = rejectedToken {
-            let current = await Task.detached { UsageAPI.readCredentials()?.token }.value
+            let current = await Task.detached { UsageAPI.tokens(UsageAPI.allCredentials()) }.value
             if current == rejected, !force { return }
             tokenChanged = current != rejected
         }
@@ -163,6 +164,23 @@ final class AppModel: ObservableObject {
     }
 
     private static func stamp(_ d: Date?) -> String { d.map { Fmt.dayTime.string(from: $0) } ?? "-" }
+
+    @Published var diagnosing = false
+    @Published var diagnosticsCopied = false
+
+    /// Builds the diagnostics report, copies it and saves it next to the log.
+    func runDiagnostics() async {
+        diagnosing = true
+        defer { diagnosing = false }
+        let text = await Diagnostics.report()
+        try? text.write(to: Diagnostics.url, atomically: true, encoding: .utf8)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        Log.write("diagnostics saved to \(Diagnostics.url.path)")
+        diagnosticsCopied = true
+        try? await Task.sleep(for: .seconds(4))
+        diagnosticsCopied = false
+    }
 
     func rescanLogs() {
         scanQueue.async { [scanner] in
