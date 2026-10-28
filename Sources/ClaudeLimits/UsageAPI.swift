@@ -17,7 +17,8 @@ struct LimitWindow: Codable, Equatable {
 
     /// How tight the limit is for the time left, 0 (relaxed) ... 1 (spent):
     /// the rate the rest of the limit allows, against the even rate of 100% over `length`.
-    /// Even pace or faster gives 0, half the even rate gives 0.5.
+    /// It turns yellow as the allowed rate nears the even one: 1.3× or more is green,
+    /// the even rate itself is yellow, 0.7× and below is red.
     /// With `skipWeekends` only weekday time counts, both in the window and in what is left of it.
     func strain(at now: Date, length: TimeInterval, skipWeekends: Bool = false) -> Double {
         let left = 1 - utilization / 100
@@ -28,7 +29,7 @@ struct LimitWindow: Codable, Equatable {
         let rest = skipWeekends ? Self.weekdayTime(from: from, to: r) : r.timeIntervalSince(from)
         guard span > 0 else { return utilization / 100 }
         let timeLeft = min(max(rest, 1), span) / span
-        return min(max(1 - left / timeLeft, 0), 1)
+        return min(max((1.3 - left / timeLeft) / 0.6, 0), 1)
     }
 
     /// Seconds between two moments that fall outside the weekend.
