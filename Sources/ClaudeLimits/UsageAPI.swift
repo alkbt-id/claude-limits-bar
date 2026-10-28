@@ -15,21 +15,45 @@ struct LimitWindow: Codable, Equatable {
     static let fiveHourLength: TimeInterval = 5 * 3600
     static let sevenDayLength: TimeInterval = 7 * 86400
 
-    /// How tight the limit is for the time left, 0 (relaxed) ... 1 (spent):
-    /// the rate the rest of the limit allows, against the even rate of 100% over `length`.
-    /// It turns yellow as the allowed rate nears the even one: 1.3× or more is green,
-    /// the even rate itself is yellow, 0.7× and below is red.
-    /// With `skipWeekends` only weekday time counts, both in the window and in what is left of it.
+    /// How tight the limit is, 0 (relaxed) ... 1 (over): whether usage fits what the even pace
+    /// allows through the end of the current step (an hour of the 5-hour window, a day of the week).
+    /// Green up to half a step below that allowance, yellow nearing it, red once it is reached.
     func strain(at now: Date, length: TimeInterval, skipWeekends: Bool = false) -> Double {
-        let left = 1 - utilization / 100
-        guard left > 0 else { return 1 }
-        guard let r = resetsAt else { return utilization / 100 }
+        let used = utilization / 100
+        guard used < 1 else { return 1 }
+        guard let a = allowance(at: now, length: length, skipWeekends: skipWeekends) else { return used }
+        return min(max((used - a.green) / (a.share - a.green), 0), 1)
+    }
+
+    /// What the even pace of 100% over `length` allows, counted in whole steps from the window start,
+    /// so a fresh window already has its first hour or day: `share` (0...1) through the end of the
+    /// current step at `until`, and `green`, half a step below it.
+    /// With `skipWeekends` only weekday time counts, both in the window and in what has passed of it.
+    func allowance(at now: Date, length: TimeInterval, skipWeekends: Bool = false) -> (green: Double, share: Double, until: Date)? {
+        guard let r = resetsAt else { return nil }
+        let step: TimeInterval = length > Self.fiveHourLength ? 86400 : 3600
         let start = r.addingTimeInterval(-length), from = min(max(now, start), r)
         let span = skipWeekends ? Self.weekdayTime(from: start, to: r) : length
-        let rest = skipWeekends ? Self.weekdayTime(from: from, to: r) : r.timeIntervalSince(from)
-        guard span > 0 else { return utilization / 100 }
-        let timeLeft = min(max(rest, 1), span) / span
-        return min(max((1.3 - left / timeLeft) / 0.6, 0), 1)
+        guard span > 0 else { return nil }
+        let passed = skipWeekends ? Self.weekdayTime(from: start, to: from) : from.timeIntervalSince(start)
+        let allowed = min(((passed / step).rounded(.down) + 1) * step, span)
+        let until = skipWeekends ? Self.adding(weekdayTime: allowed - passed, to: from) : start.addingTimeInterval(allowed)
+        return ((allowed - step / 2) / span, allowed / span, min(until, r))
+    }
+
+    /// The moment `weekdayTime` seconds of weekdays after `d`.
+    static func adding(weekdayTime s: TimeInterval, to d: Date, calendar cal: Calendar = .current) -> Date {
+        var left = s
+        var t = d
+        while left > 0 {
+            guard let next = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: t)) else { break }
+            if !cal.isDateInWeekend(t) {
+                if next.timeIntervalSince(t) >= left { return t.addingTimeInterval(left) }
+                left -= next.timeIntervalSince(t)
+            }
+            t = next
+        }
+        return t
     }
 
     /// Seconds between two moments that fall outside the weekend.

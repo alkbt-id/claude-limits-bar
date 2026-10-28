@@ -154,6 +154,7 @@ private struct LimitRows: View {
         let frac = (shown?.utilization ?? 0) / 100
         // Colored by pace: how much is left for the time left, not by the share spent.
         let strain = shown?.strain(at: model.now, length: length, skipWeekends: skipWeekends) ?? 0
+        let allowance = shown?.allowance(at: model.now, length: length, skipWeekends: skipWeekends)
         return GridRow(alignment: .center) {
             Text(title).font(.callout).foregroundStyle(.secondary)
             Text(Fmt.percent(shown?.utilization))
@@ -164,11 +165,31 @@ private struct LimitRows: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.secondary.opacity(0.2))
                     Capsule().fill(Palette.color(strain)).frame(width: max(6, g.size.width * min(frac, 1)))
+                    // What the even pace allows through the end of the current hour or day.
+                    if let even = allowance?.share {
+                        Capsule().fill(Color.primary.opacity(0.7))
+                            .frame(width: 2, height: 12)
+                            .offset(x: min(max(g.size.width * even - 1, 0), g.size.width - 2))
+                    }
                 }
             }
             .frame(width: 130, height: 6)
-            Text(resetText(window)).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(resetText(window)).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                if let allowance {
+                    allowanceText(allowance).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .help("Ровный темп по целым часам (5-часовое окно) или дням (неделя): до какого процента цвет зелёный и сколько можно потратить до конца текущего часа или дня (засечка на полосе), дальше — красный")
+                }
+            }
         }
+    }
+
+    /// "до 21% · лимит 29% до Чт 21:00", the first part in green, the limit in red.
+    private func allowanceText(_ a: (green: Double, share: Double, until: Date)) -> Text {
+        Text("до \(Fmt.percent(a.green * 100))").foregroundColor(Palette.color(0))
+            + Text(" · ")
+            + Text("лимит \(Fmt.percent(a.share * 100))").foregroundColor(Palette.color(1))
+            + Text(" до \(Fmt.resetClock(a.until, now: model.now))")
     }
 
     private func resetText(_ w: LimitWindow?) -> String {
