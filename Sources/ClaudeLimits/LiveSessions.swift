@@ -63,6 +63,7 @@ final class LiveSessionScanner: @unchecked Sendable {
     private var tails: [String: TranscriptTail] = [:]
     private var transcriptPaths: [String: URL] = [:]
     private var hosts: [Int32: (LiveSession.Host, Int32?)] = [:]
+    private var copilot: [Int32: Bool] = [:]
     private let extensionLogs = ExtensionLogs()
 
     /// A tool call that hangs this long without transcript writes, commands or subagents is taken for a permission prompt.
@@ -72,7 +73,13 @@ final class LiveSessionScanner: @unchecked Sendable {
         let dir = claudeDir.appendingPathComponent("sessions")
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         var out: [LiveSession] = []
-        var alive = Set<String>()
+        var alive = Set<String>(), alivePIDs = Set<Int32>()
+        // The VS Code extension logs: read once per scan, only when a session needs them.
+        var started: Set<String>?
+        let startedTools = { [extensionLogs] () -> Set<String> in
+            if started == nil { started = extensionLogs.update() }
+            return started!
+        }
         for f in files where f.pathExtension == "json" {
             guard let d = try? Data(contentsOf: f),
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
@@ -83,6 +90,7 @@ final class LiveSessionScanner: @unchecked Sendable {
             let startedAt = (o["startedAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
             guard let proc = Proc.info(pid), Proc.isSame(proc, startedAt: startedAt) else { continue }
             alive.insert(sid)
+            alivePIDs.insert(pid)
 
             let cwd = o["cwd"] as? String ?? "?"
             let tail = transcript(for: sid, cwd: cwd).map { url -> TranscriptTail in
@@ -101,19 +109,40 @@ final class LiveSessionScanner: @unchecked Sendable {
             let entrypoint = o["entrypoint"] as? String
             let (state, since) = Self.state(status: status, waitingFor: o["waitingFor"] as? String, statusAt: statusAt,
                                             tail: tail, agents: agents, commands: commands, reportsPrompts: entrypoint == "cli",
-                                            startedTools: extensionLogs.update)
+                                            startedTools: startedTools)
+            if state == .idle || state == .stopped,
+               windowless(pid: pid, session: sid, entrypoint: entrypoint, startedAt: procStart, readLogs: startedTools) { continue }
 
             if hosts[pid] == nil { hosts[pid] = Self.host(of: pid, entrypoint: entrypoint) }
             let (host, hostPID) = hosts[pid]!
             let name = (o["nameSource"] as? String) == "derived" ? nil : o["name"] as? String
             let title = name ?? tail?.title ?? titles[sid] ?? URL(fileURLWithPath: cwd).lastPathComponent
-            out.append(LiveSession(id: sid, pid: pid, title: title, cwd: cwd, entrypoint: entrypoint,
-                                   state: state, since: since ?? startedAt ?? Date(), agentNames: agentNames, commandLines: commandLines,
-                                   host: host, hostPID: hostPID, tty: Proc.tty(proc)))
+            let session = LiveSession(id: sid, pid: pid, title: title, cwd: cwd, entrypoint: entrypoint,
+                                      state: state, since: since ?? startedAt ?? Date(), agentNames: agentNames, commandLines: commandLines,
+                                      host: host, hostPID: hostPID, tty: Proc.tty(proc))
+            // Two processes may serve one session (VS Code's agent host starts some twice): one row, the busier one.
+            if let i = out.firstIndex(where: { $0.id == sid }) {
+                if session.isWorking && !out[i].isWorking { out[i] = session }
+                continue
+            }
+            out.append(session)
         }
         tails = tails.filter { alive.contains($0.key) }
-        hosts = hosts.filter { pid in out.contains { $0.pid == pid.key } }
+        hosts = hosts.filter { alivePIDs.contains($0.key) }
+        copilot = copilot.filter { alivePIDs.contains($0.key) }
         return out
+    }
+
+    /// VS Code keeps a session's process after no window shows it: its window closed, or its panel switched
+    /// to another session. Such a session is left out once its turn is over: nobody can answer it there.
+    private func windowless(pid: Int32, session: String, entrypoint: String?, startedAt: Date, readLogs: () -> Set<String>) -> Bool {
+        // Copilot runs Claude through VS Code's agent host, one process for all windows. It keeps the sessions
+        // after the agents window closes and logs nothing that tells which window shows them.
+        if copilot[pid] == nil { copilot[pid] = Proc.environment(pid)?["AI_AGENT"] == "github_copilot_vscode_agent" }
+        if copilot[pid]! { return true }
+        guard entrypoint == "claude-vscode" else { return false }
+        _ = readLogs()
+        return extensionLogs.detached(session: session, startedAt: startedAt) == true
     }
 
     // MARK: State
@@ -305,17 +334,59 @@ final class TranscriptTail {
     }
 }
 
-/// Tool calls that VS Code sessions have started. The Claude Code extension runs `claude` with `--debug-to-stderr`
-/// and copies its output to `logs/<launch>/window<id>/exthost/Anthropic.claude-code/*.log` in the app's support
-/// folder, `[Stall] tool_dispatch_start tool=<name> toolUseId=<id>` included: written once a call got its permission.
+/// Tool calls that VS Code sessions have started, and sessions no panel shows. The Claude Code extension runs `claude`
+/// with `--debug-to-stderr` and copies its output to `logs/<launch>/window<id>/exthost/Anthropic.claude-code/*.log`
+/// in the app's support folder, `[Stall] tool_dispatch_start tool=<name> toolUseId=<id>` included: written once a call
+/// got its permission. The extension's own lines there trace each panel's channel: "Launching Claude on channel: <id>",
+/// "Spawning Claude … resume: <session or undefined>" for its process, `engine_ui_detach` when the panel switches
+/// to another session and leaves the process running, "Closing Claude on channel: <id>" when the process is stopped.
 /// Logs are read incrementally, only those written in the last day.
 final class ExtensionLogs {
+    private struct Channel { var spawnedAt: Date; var resume: String?; var detached = false }
+    private enum Event {
+        case started(String)
+        case launch(channel: String), spawn(at: Date, resume: String?), close(channel: String)
+        case ui(channel: String, attached: Bool)
+    }
+    private enum Line { case launch, spawn, close, detach, attach }
+
     private var offsets: [URL: UInt64] = [:]
     private var started: [String: Date] = [:]   // tool call id → when seen
+    private var channels: [String: Channel] = [:]
+    private var launching: [URL: String] = [:]  // channel launched in this log whose process is not spawned yet
 
     private static let marker = Data("tool_dispatch_start ".utf8)
     private static let idKey = Data("toolUseId=".utf8)
+    /// The extension's own lines read "<date> <time> [info] <text>": the text starts this far in.
+    private static let textAt = 24
+    private static let lines: [(Data, Line)] = [
+        (Data("[info] Launching Claude on channel: ".utf8), .launch),
+        (Data("[info] Spawning Claude with SDK query function".utf8), .spawn),
+        (Data("[info] Closing Claude on channel: ".utf8), .close),
+        (Data("\"type\":\"engine_ui_detach\"".utf8), .detach),
+        (Data("\"type\":\"engine_ui_attach\"".utf8), .attach),
+    ]
+    private static let resumeKey = Data(", resume: ".utf8)
+    private static let webview = Data("[info] Received message from webview: ".utf8)
+    private static let channelKey = Data("\"channelId\":\"".utf8)
     private static let chunk = 4 << 20
+
+    private let stamp: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return f
+    }()
+
+    /// Whether the panel that started this process switched to another session and left it running with
+    /// no window showing it. nil when the logs don't tell which panel started it.
+    /// The process is told by its session when the panel resumed one, else by its start time.
+    func detached(session: String, startedAt: Date) -> Bool? {
+        func gap(_ c: Channel) -> TimeInterval { abs(c.spawnedAt.timeIntervalSince(startedAt)) }
+        let near = channels.values.filter { gap($0) < 2 && ($0.resume == nil || $0.resume == session) }
+        let own = near.first { $0.resume == session } ?? near.min { gap($0) < gap($1) }
+        return own?.detached
+    }
 
     /// Reads what the logs gained since the last call; returns the ids of started tool calls.
     func update() -> Set<String> {
@@ -341,6 +412,8 @@ final class ExtensionLogs {
         }
         offsets = offsets.filter { seen.contains($0.key) }
         started = started.filter { $0.value > dayAgo }
+        let weekAgo = Date().addingTimeInterval(-7 * 86400)
+        channels = channels.filter { $0.value.spawnedAt > weekAgo }
         return Set(started.keys)
     }
 
@@ -358,15 +431,64 @@ final class ExtensionLogs {
                 offset += UInt64(data.count)
                 continue
             }
-            var from = data.startIndex
-            while let m = data.range(of: Self.marker, in: from..<lastNL) {
-                let lineEnd = data[m.upperBound...].firstIndex(of: 0x0A) ?? lastNL
-                from = lineEnd
-                guard let k = data.range(of: Self.idKey, in: m.upperBound..<lineEnd) else { continue }
-                let end = data[k.upperBound..<lineEnd].firstIndex(of: 0x20) ?? lineEnd
-                started[String(decoding: data[k.upperBound..<end], as: UTF8.self)] = now
+            for e in events(data, upTo: lastNL) {
+                switch e {
+                case .started(let id): started[id] = now
+                case .launch(let c): launching[url] = c
+                case .spawn(let at, let resume):
+                    guard let c = launching.removeValue(forKey: url) else { break }
+                    channels[c] = Channel(spawnedAt: at, resume: resume)
+                case .close(let c): channels[c] = nil
+                case .ui(let c, let attached): channels[c]?.detached = !attached
+                }
             }
             offset += UInt64(lastNL - data.startIndex + 1)
+        }
+    }
+
+    /// Events in the whole lines of `data` before `end`, in the order they were logged.
+    private func events(_ data: Data, upTo end: Data.Index) -> [Event] {
+        var found: [(Data.Index, Event)] = []
+        // claude's own output: the marker may be anywhere in its line.
+        var from = data.startIndex
+        while let m = data.range(of: Self.marker, in: from..<end) {
+            let lineEnd = data[m.upperBound..<end].firstIndex(of: 0x0A) ?? end
+            from = lineEnd
+            guard let k = data.range(of: Self.idKey, in: m.upperBound..<lineEnd) else { continue }
+            let idEnd = data[k.upperBound..<lineEnd].firstIndex(of: 0x20) ?? lineEnd
+            found.append((m.lowerBound, .started(String(decoding: data[k.upperBound..<idEnd], as: UTF8.self))))
+        }
+        for (marker, kind) in Self.lines {
+            from = data.startIndex
+            while let m = data.range(of: marker, in: from..<end) {
+                let lineEnd = data[m.upperBound..<end].firstIndex(of: 0x0A) ?? end
+                from = lineEnd
+                let lineStart = data[..<m.lowerBound].lastIndex(of: 0x0A).map { $0 + 1 } ?? data.startIndex
+                if let e = event(kind, line: data[lineStart..<lineEnd], marker: m) { found.append((m.lowerBound, e)) }
+            }
+        }
+        return found.sorted { $0.0 < $1.0 }.map(\.1)
+    }
+
+    /// The event of one of the extension's own lines; nil for claude's output that only quotes the marker.
+    private func event(_ kind: Line, line: Data, marker m: Range<Data.Index>) -> Event? {
+        guard line.count > Self.textAt else { return nil }
+        let text = line.startIndex + Self.textAt
+        func rest() -> String { String(decoding: line[m.upperBound...], as: UTF8.self) }
+        switch kind {
+        case .launch where m.lowerBound == text: return .launch(channel: rest())
+        case .close where m.lowerBound == text: return .close(channel: rest())
+        case .spawn where m.lowerBound == text:
+            guard let at = stamp.date(from: String(decoding: line.prefix(23), as: UTF8.self)) else { return nil }
+            let resume = line.range(of: Self.resumeKey, in: m.upperBound..<line.endIndex)
+                .map { String(decoding: line[$0.upperBound...], as: UTF8.self) }
+            return .spawn(at: at, resume: resume == "undefined" ? nil : resume)
+        case .detach, .attach:
+            guard line[text...].starts(with: Self.webview),
+                  let k = line.range(of: Self.channelKey, in: text..<m.lowerBound),
+                  let q = line[k.upperBound...].firstIndex(of: 0x22) else { return nil }
+            return .ui(channel: String(decoding: line[k.upperBound..<q], as: UTF8.self), attached: kind == .attach)
+        default: return nil
         }
     }
 }
