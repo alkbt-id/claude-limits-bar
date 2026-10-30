@@ -111,7 +111,11 @@ enum UsageAPI {
 
     /// Every Claude Code login on this Mac, best first: not expired, then the one expiring last.
     static func allCredentials() -> [Credentials] {
-        var found = serviceNames().compactMap { name in readKeychain(name).flatMap { parse($0, service: name) } }
+        var found = keychainItems().compactMap { item in
+            readKeychain(item.service, account: item.account).flatMap {
+                parse($0, service: item.account.map { "\(item.service) (\($0))" } ?? item.service)
+            }
+        }
         // Fallback: credentials file used on some setups.
         let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/.credentials.json")
         if let d = try? Data(contentsOf: file), let c = parse(d, service: "~/.claude/.credentials.json") { found.append(c) }
@@ -123,23 +127,30 @@ enum UsageAPI {
         }
     }
 
-    /// Names of the Claude Code keychain items. Reads attributes only, so no access prompt.
-    private static func serviceNames() -> [String] {
+    /// The Claude Code keychain items, by service and account. Reads attributes only, so no access prompt.
+    /// One service name may hold several items: Claude Code can add a second "Claude Code-credentials"
+    /// under account "unknown" with only MCP logins in it, and a lookup by service alone may return that one.
+    private static func keychainItems() -> [(service: String, account: String?)] {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecMatchLimit as String: kSecMatchLimitAll,
                                     kSecReturnAttributes as String: true]
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let items = result as? [[String: Any]] else { return [servicePrefix] }
-        let names = Set(items.compactMap { $0[kSecAttrService as String] as? String }.filter { $0.hasPrefix(servicePrefix) })
-        return names.isEmpty ? [servicePrefix] : names.sorted()
+              let items = result as? [[String: Any]] else { return [(servicePrefix, nil)] }
+        var seen = Set<String>()
+        let found = items.compactMap { item -> (service: String, account: String?)? in
+            guard let service = item[kSecAttrService as String] as? String, service.hasPrefix(servicePrefix) else { return nil }
+            let account = item[kSecAttrAccount as String] as? String
+            return seen.insert("\(service)\n\(account ?? "")").inserted ? (service, account) : nil
+        }
+        return found.isEmpty ? [(servicePrefix, nil)] : found.sorted { ($0.service, $0.account ?? "") < ($1.service, $1.account ?? "") }
     }
 
     /// Uses /usr/bin/security so the keychain item ACL stays the same as for the CLI.
-    private static func readKeychain(_ service: String) -> Data? {
+    private static func readKeychain(_ service: String, account: String?) -> Data? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        p.arguments = ["find-generic-password", "-s", service, "-w"]
+        p.arguments = ["find-generic-password", "-s", service] + (account.map { ["-a", $0] } ?? []) + ["-w"]
         let out = Pipe()
         p.standardOutput = out
         p.standardError = Pipe()
@@ -185,6 +196,7 @@ enum UsageAPI {
         if let last = lastRoute, let i = routes.firstIndex(of: last) { routes.insert(routes.remove(at: i), at: 0) }
         var failure: Error?
         for route in routes {
+            var rejected = 0
             for creds in all {
                 do {
                     let snap = try await fetch(with: creds, via: route)
@@ -198,6 +210,7 @@ enum UsageAPI {
                     // The API was reached, so this outranks any network failure on other routes.
                     Log.write("rejected: \(creds.summary)")
                     failure = UsageError.unauthorized(token: tokens(all))
+                    rejected += 1
                 } catch UsageError.blocked {
                     Log.write("\(route) failed: blocked (HTTP 403 Request not allowed)")
                     if !(failure is UsageError) { failure = UsageError.blocked }
@@ -208,6 +221,8 @@ enum UsageAPI {
                     break
                 }
             }
+            // The API refused every login: another route would only resend the same tokens and earn a 429.
+            if rejected == all.count { break }
         }
         throw failure ?? UsageError.badResponse
     }
