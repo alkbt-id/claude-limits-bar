@@ -74,6 +74,8 @@ struct UsageSnapshot: Codable, Equatable {
     var fetchedAt: Date
     var fiveHour: LimitWindow?
     var sevenDay: LimitWindow?
+    /// Weekly limit on Fable, on plans that have one: percent of its own size, a part of the weekly limit.
+    var fable: LimitWindow?
     /// Share of the weekly usage that came from Claude Code (0...1), if the API reports it.
     var claudeCodeShare: Double?
     /// Plan from the Claude Code credentials, if they name it.
@@ -275,6 +277,7 @@ enum UsageAPI {
         return UsageSnapshot(fetchedAt: Date(),
                              fiveHour: window(obj["five_hour"]),
                              sevenDay: window(obj["seven_day"]),
+                             fable: fableWindow(obj["limits"]),
                              claudeCodeShare: share,
                              plan: creds.plan)
     }
@@ -282,6 +285,15 @@ enum UsageAPI {
     private static func window(_ any: Any?) -> LimitWindow? {
         guard let d = any as? [String: Any], let u = d["utilization"] as? Double else { return nil }
         return LimitWindow(utilization: u, resetsAt: (d["resets_at"] as? String).flatMap(parseDate))
+    }
+
+    /// The weekly row scoped to Fable in `limits`: unlike `seven_day`, it has no field of its own.
+    private static func fableWindow(_ any: Any?) -> LimitWindow? {
+        guard let row = (any as? [[String: Any]])?.first(where: { r in
+            let model = (r["scope"] as? [String: Any])?["model"] as? [String: Any]
+            return r["kind"] as? String == "weekly_scoped" && (model?["display_name"] as? String)?.hasPrefix("Fable") == true
+        }), let u = row["percent"] as? Double else { return nil }
+        return LimitWindow(utilization: u, resetsAt: (row["resets_at"] as? String).flatMap(parseDate))
     }
 
     static func parseDate(_ s: String) -> Date? {

@@ -130,7 +130,7 @@ final class AppModel: ObservableObject {
             rejectedToken = nil
             activityAtFetch = activity ?? .distantPast
             store.append(snap)
-            Log.write("ok: 5h \(Fmt.percent(snap.fiveHour?.utilization)) reset \(Self.stamp(snap.fiveHour?.resetsAt)), week \(Fmt.percent(snap.sevenDay?.utilization)) reset \(Self.stamp(snap.sevenDay?.resetsAt)), cc share \(snap.claudeCodeShare.map { String(format: "%.2f", $0) } ?? "-")")
+            Log.write("ok: 5h \(Fmt.percent(snap.fiveHour?.utilization)) reset \(Self.stamp(snap.fiveHour?.resetsAt)), week \(Fmt.percent(snap.sevenDay?.utilization)) reset \(Self.stamp(snap.sevenDay?.resetsAt)), fable \(Fmt.percent(snap.fable?.utilization)), cc share \(snap.claudeCodeShare.map { String(format: "%.2f", $0) } ?? "-")")
         } catch UsageError.rateLimited(let retryAfter) {
             let until = Date().addingTimeInterval(max(retryAfter ?? 0, Self.pollInterval * 2))
             backoffUntil = until
@@ -273,6 +273,9 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: Derived data
+
+    /// A poll came back without the 5-hour window: the plan has no such limit (verified Ultra accounts).
+    var noFiveHourLimit: Bool { snapshot != nil && snapshot?.fiveHour == nil }
 
     /// Start of the current weekly window (reset time minus 7 days), or 7 days ago.
     var weekStart: Date {

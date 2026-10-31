@@ -140,8 +140,13 @@ private struct LimitRows: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
-                row("Сессия · 5 часов", model.snapshot?.fiveHour, length: LimitWindow.fiveHourLength, skipWeekends: false)
+                if !model.noFiveHourLimit {
+                    row("Сессия · 5 часов", model.snapshot?.fiveHour, length: LimitWindow.fiveHourLength, skipWeekends: false)
+                }
                 row("Неделя", model.snapshot?.sevenDay, length: LimitWindow.sevenDayLength, skipWeekends: model.skipWeekends)
+                if let fable = model.snapshot?.fable {
+                    row("Fable · неделя", fable, length: LimitWindow.sevenDayLength, skipWeekends: model.skipWeekends)
+                }
             }
             Toggle("Недельный темп без выходных", isOn: $model.skipWeekends)
                 .toggleStyle(.checkbox).font(.callout).foregroundStyle(.secondary)
@@ -343,7 +348,7 @@ private struct LiveSessionsView: View {
     }
 }
 
-// MARK: - Plan fit: recorded windows replayed on Pro / Max 5x / Max 20x, or on the Team seats
+// MARK: - Plan fit: recorded windows replayed on Pro / Max / Ultra, or on the Team seats
 
 private struct PlanPicker: View {
     @EnvironmentObject var model: AppModel
@@ -382,20 +387,17 @@ private struct PlanFitView: View {
     }
 
     /// Marker position 0...1: segment of the cheapest plan that fits, offset by how full it would be.
-    private func position(_ r: PlanReport, upper: Bool) -> Double {
+    private func position(_ r: PlanReport) -> Double {
         let n = Double(r.fits.count)
-        for (i, f) in r.fits.enumerated() {
-            let w = upper ? f.worst.upperBound : f.worst.lowerBound
-            if f.fiveOver == 0, w < 100 { return (Double(i) + w / 100) / n }
-        }
+        for (i, f) in r.fits.enumerated() where f.fits { return (Double(i) + f.worst / 100) / n }
         return 1
     }
 
     private func track(_ r: PlanReport) -> some View {
-        let lo = position(r, upper: false), hi = position(r, upper: true)
+        let pos = position(r)
         // Color by how full the marker's own plan would be; past the last plan it is red.
-        let seg = hi * Double(r.fits.count)
-        let color = Palette.color(hi >= 1 ? 1 : seg - seg.rounded(.down))
+        let seg = pos * Double(r.fits.count)
+        let color = Palette.color(pos >= 1 ? 1 : seg - seg.rounded(.down))
         return VStack(spacing: 4) {
             GeometryReader { g in
                 let w = g.size.width
@@ -410,15 +412,10 @@ private struct PlanFitView: View {
                         }
                     }
                     .frame(height: 10)
-                    if hi - lo > 0.005 {
-                        Capsule().fill(color.opacity(0.45))
-                            .frame(width: (hi - lo) * w, height: 6)
-                            .offset(x: lo * w)
-                    }
                     Circle().fill(color)
                         .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 2))
                         .frame(width: 16, height: 16)
-                        .offset(x: min(max(hi * w - 8, 0), w - 16))
+                        .offset(x: min(max(pos * w - 8, 0), w - 16))
                 }
             }
             .frame(height: 16)
@@ -441,16 +438,20 @@ private struct PlanFitView: View {
                 .font(.caption.weight(f.plan == r.current ? .bold : .regular))
             Spacer()
             Group {
-                if f.fiveOver > 0 {
+                if !f.plan.hasSessionLimit {
+                    Text("5ч: нет лимита").foregroundStyle(Palette.color(0))
+                } else if r.fiveWindows == 0 {
+                    Text("5ч: нет данных").foregroundStyle(.secondary)
+                } else if f.fiveOver > 0 {
                     Text("5ч: упор в \(f.fiveOver) из \(r.fiveWindows)").foregroundStyle(Palette.color(1))
                 } else {
                     Text("5ч: пик \(pct(f.fiveWorst))").foregroundStyle(Palette.color(f.fiveWorst / 100))
                 }
-                Text("неделя: \(pct(f.week))").foregroundStyle(Palette.color(f.week.upperBound / 100))
+                Text("неделя: \(pct(f.week))").foregroundStyle(Palette.color(f.week / 100))
                     .frame(width: 118, alignment: .trailing)
                     .help(r.current.isTeam
                           ? "Недельные лимиты мест Team не публикуются: взято то же соотношение, что для 5 часов, Premium = 5× Standard"
-                          : "Недельное соотношение тарифов не публикуется: для Max 20x взято 10–20× Pro, отсюда диапазон")
+                          : "")
             }
             .font(.caption.monospacedDigit())
         }
@@ -458,31 +459,24 @@ private struct PlanFitView: View {
 
     private func verdict(_ r: PlanReport) -> String {
         guard let best = r.cheapest else { return "Не хватает даже \(r.fits.last!.plan.title)" }
-        let maybe = r.fits.first { $0.fiveOver == 0 && $0.week.lowerBound < 100 }?.plan
-        var text: String
         if best.price < r.current.price {
-            text = "Хватило бы \(best.title) — экономия $\(r.current.price - best.price) в месяц"
-        } else if best == r.current {
-            text = "Текущий тариф — самый дешёвый из подходящих"
-        } else {
-            text = "По замерам нужен \(best.title)"
+            let scope = r.fiveWindows == 0 && best.hasSessionLimit ? " по неделе" : ""
+            return "Хватило бы \(best.title)\(scope) — экономия $\(r.current.price - best.price) в месяц"
         }
-        if let maybe, maybe.price < best.price {
-            text += ". Возможно, хватит и \(maybe.title): зависит от недельного лимита, его Anthropic не публикует"
-        }
-        return text
+        return best == r.current ? "Текущий тариф — самый дешёвый из подходящих" : "По замерам нужен \(best.title)"
     }
 
     private func caption(_ r: PlanReport) -> String {
         var text = "Период: \(Fmt.day.string(from: r.from)) – \(Fmt.day.string(from: model.now))"
-        if r.capped { text += ". Лимит доходил до 100% — реальная потребность выше" }
+        if r.capped { text += " · Лимит доходил до 100% — реальная потребность выше" }
+        // Without the limit the API reports no 5-hour usage, so no new windows reach the comparison.
+        if model.noFiveHourLimit {
+            text += " · Без 5-часового лимита окна не замеряются: сравнение \(r.fiveWindows > 0 ? "по старым замерам" : "только по неделе")"
+        }
         return text
     }
 
     private func pct(_ v: Double) -> String { v >= 10 ? "\(Int(v.rounded()))%" : String(format: "%.1f%%", v) }
-    private func pct(_ r: ClosedRange<Double>) -> String {
-        r.upperBound - r.lowerBound < 0.5 ? pct(r.upperBound) : "\(pct(r.lowerBound))–\(pct(r.upperBound))"
-    }
 }
 
 

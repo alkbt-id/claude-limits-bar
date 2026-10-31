@@ -99,11 +99,12 @@ enum Snapshot {
             t.addTimeInterval(1800)
         }
 
-        let model = AppModel(store: SampleStore(samples: samples, plan: .max20))
-        model.planChoice = .max20
+        let model = AppModel(store: SampleStore(samples: samples, plan: .max))
+        model.planChoice = .max
         model.snapshot = UsageSnapshot(fetchedAt: now,
                                        fiveHour: LimitWindow(utilization: 42, resetsAt: fiveReset),
                                        sevenDay: LimitWindow(utilization: 61, resetsAt: weekReset),
+                                       fable: LimitWindow(utilization: 38, resetsAt: weekReset),
                                        claudeCodeShare: 0.9)
 
         let titles = [("Рефакторинг API платежей", "payments-api"), ("Миграция на Swift 6", "ios-app"),
