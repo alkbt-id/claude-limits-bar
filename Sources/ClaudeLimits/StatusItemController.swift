@@ -76,12 +76,13 @@ final class StatusItemController: NSObject {
         let gray = NSColor.secondaryLabelColor
 
         // Columns: label | percent (right-aligned, fixed width) | reset time.
-        // Two rows fit: without a 5-hour limit its place goes to Fable, or the weekly row sits alone in the middle.
+        // Two rows fit, in the panel's order: without a 5-hour limit the weekly row moves up with Fable under it,
+        // or sits alone in the middle.
         typealias Row = (String, LimitWindow?, TimeInterval, Bool, CGFloat)
-        let fable: Row? = s?.fable.map { ("Fable", $0, LimitWindow.sevenDayLength, model.skipWeekends, 12) }
-        let top: Row? = model.noFiveHourLimit ? fable : ("5ч", s?.fiveHour, LimitWindow.fiveHourLength, false, 12)
-        let week: Row = ("7д", s?.sevenDay, LimitWindow.sevenDayLength, model.skipWeekends, top == nil ? 7 : 2)
-        let rows = [top, week].compactMap { $0 }
+        let five: Row? = model.noFiveHourLimit ? nil : ("5ч", s?.fiveHour, LimitWindow.fiveHourLength, false, 12)
+        let fable: Row? = model.noFiveHourLimit ? s?.fable.map { ("Fable", $0, LimitWindow.sevenDayLength, model.skipWeekends, 2) } : nil
+        let week: Row = ("7д", s?.sevenDay, LimitWindow.sevenDayLength, model.skipWeekends, five != nil ? 2 : fable != nil ? 12 : 7)
+        let rows = [five, week, fable].compactMap { $0 }
             .map { ($0.0, $0.1?.current(at: model.now), $0.2, $0.3, $0.4) }.map { label, w, length, skip, baseline in
             let color: NSColor = w.map { Palette.nsColor($0.strain(at: model.now, length: length, skipWeekends: skip)) } ?? gray
             let time = w?.resetsAt.map { Fmt.resetClock($0, now: model.now) } ?? ""
