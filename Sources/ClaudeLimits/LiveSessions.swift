@@ -191,9 +191,9 @@ final class LiveSessionScanner: @unchecked Sendable {
     /// Returns their descriptions, oldest first.
     private static func runningAgents(of tail: TranscriptTail, since start: Date?) -> [String] {
         let dir = tail.url.deletingPathExtension().appendingPathComponent("subagents")
-        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
         let fresh = Date().addingTimeInterval(-10 * 60)
-        var found: [(Date, String)] = []
+        var found = workflowAgents(in: dir.appendingPathComponent("workflows"), after: max(fresh, start ?? .distantPast))
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         for f in files where f.lastPathComponent.hasSuffix(".meta.json") {
             let log = dir.appendingPathComponent(f.lastPathComponent.replacingOccurrences(of: ".meta.json", with: ".jsonl"))
             guard let m = try? log.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
@@ -209,6 +209,46 @@ final class LiveSessionScanner: @unchecked Sendable {
             found.append((m, name))
         }
         return found.sorted { $0.0 < $1.0 }.map(\.1)
+    }
+
+    /// Agents of this session's workflow runs that have not returned. A workflow script runs in the background and
+    /// calls its agents in the foreground, so their meta never says `finished` and no tool call of the session waits
+    /// on them. Each run keeps `subagents/workflows/<run>/journal.jsonl`: a `started` entry per agent call, then
+    /// a `result` or `failed` entry with the same key once the call returns. Only agents whose transcript
+    /// `agent-<id>.jsonl` was written after `cutoff` count: a run cut short never logs its results.
+    private static func workflowAgents(in dir: URL, after cutoff: Date) -> [(Date, String)] {
+        let fm = FileManager.default
+        var found: [(Date, String)] = []
+        for run in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
+            var written: [String: Date] = [:]   // agent id → when its transcript was written
+            for f in (try? fm.contentsOfDirectory(at: run, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            where f.pathExtension == "jsonl" && f.lastPathComponent.hasPrefix("agent-") {
+                guard let m = try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                      m > cutoff else { continue }
+                written[String(f.deletingPathExtension().lastPathComponent.dropFirst("agent-".count))] = m
+            }
+            // A run with no fresh transcripts is over: its journal is not read.
+            guard !written.isEmpty,
+                  let journal = try? Data(contentsOf: run.appendingPathComponent("journal.jsonl")) else { continue }
+            var open: [String: (agent: String, label: String?)] = [:]   // call key → the agent it started
+            for line in journal.split(separator: 0x0A) {
+                guard let o = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                      let key = o["key"] as? String else { continue }
+                switch o["type"] as? String {
+                case "started": if let a = o["agentId"] as? String { open[key] = (a, o["label"] as? String) }
+                case "result", "failed": open[key] = nil
+                default: break
+                }
+            }
+            for (agent, label) in open.values {
+                guard let m = written[agent] else { continue }
+                let meta = (try? Data(contentsOf: run.appendingPathComponent("agent-\(agent).meta.json")))
+                    .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let name = [label, meta?["description"] as? String].compactMap { $0 }.first { !$0.isEmpty } ?? "агент"
+                found.append((m, name))
+            }
+        }
+        return found
     }
 
     // MARK: Files and processes
