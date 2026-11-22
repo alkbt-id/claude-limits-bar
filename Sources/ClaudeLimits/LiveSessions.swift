@@ -45,6 +45,9 @@ struct LiveSession: Identifiable, Equatable {
     var host: Host
     var hostPID: Int32?
     var tty: String?
+    /// A link the hosting app gave the session to open it: an app built on the Agent SDK sets
+    /// `CLAUDE_LIMITS_OPEN_URL` in the environment of the `claude` process it starts.
+    var openURL: URL? = nil
 
     var agents: Int { agentNames.count }
     var commands: Int { commandLines.count }
@@ -63,7 +66,19 @@ final class LiveSessionScanner: @unchecked Sendable {
     private var tails: [String: TranscriptTail] = [:]
     private var transcriptPaths: [String: URL] = [:]
     private var hosts: [Int32: (LiveSession.Host, Int32?)] = [:]
+    /// `CLAUDE_LIMITS_OPEN_URL` of each process, "" when it has none: the environment is read once per process.
+    private var openLinks: [Int32: String] = [:]
     private var copilot: [Int32: Bool] = [:]
+
+    static let openURLVar = "CLAUDE_LIMITS_OPEN_URL"
+
+    /// The link with `{session}` replaced by the session id; nil for an empty or broken link.
+    static func openURL(_ template: String, session: String) -> URL? {
+        guard !template.isEmpty else { return nil }
+        let id = session.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-"))) ?? session
+        guard let url = URL(string: template.replacingOccurrences(of: "{session}", with: id)), url.scheme != nil else { return nil }
+        return url
+    }
     private let extensionLogs = ExtensionLogs()
 
     /// A tool call that hangs this long without transcript writes, commands or subagents is taken for a permission prompt.
@@ -113,13 +128,17 @@ final class LiveSessionScanner: @unchecked Sendable {
             if state == .idle || state == .stopped,
                windowless(pid: pid, session: sid, entrypoint: entrypoint, startedAt: procStart, readLogs: startedTools) { continue }
 
-            if hosts[pid] == nil { hosts[pid] = Self.host(of: pid, entrypoint: entrypoint) }
+            if hosts[pid] == nil {
+                hosts[pid] = Self.host(of: pid, entrypoint: entrypoint)
+                openLinks[pid] = Proc.environment(pid)?[Self.openURLVar] ?? ""
+            }
             let (host, hostPID) = hosts[pid]!
             let name = (o["nameSource"] as? String) == "derived" ? nil : o["name"] as? String
             let title = name ?? tail?.title ?? titles[sid] ?? URL(fileURLWithPath: cwd).lastPathComponent
             let session = LiveSession(id: sid, pid: pid, title: title, cwd: cwd, entrypoint: entrypoint,
                                       state: state, since: since ?? startedAt ?? Date(), agentNames: agentNames, commandLines: commandLines,
-                                      host: host, hostPID: hostPID, tty: Proc.tty(proc))
+                                      host: host, hostPID: hostPID, tty: Proc.tty(proc),
+                                      openURL: Self.openURL(openLinks[pid] ?? "", session: sid))
             // Two processes may serve one session (VS Code's agent host starts some twice): one row, the busier one.
             if let i = out.firstIndex(where: { $0.id == sid }) {
                 if session.isWorking && !out[i].isWorking { out[i] = session }
@@ -129,6 +148,7 @@ final class LiveSessionScanner: @unchecked Sendable {
         }
         tails = tails.filter { alive.contains($0.key) }
         hosts = hosts.filter { alivePIDs.contains($0.key) }
+        openLinks = openLinks.filter { alivePIDs.contains($0.key) }
         copilot = copilot.filter { alivePIDs.contains($0.key) }
         return out
     }

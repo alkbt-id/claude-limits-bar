@@ -48,6 +48,7 @@ MainActor.assumeIsolated {
             var window = ""
             if case .vscode(let id) = s.host { window = " window \(Navigator.vscodeWindowID(claudePID: s.pid, appPID: s.hostPID, bundleID: id).map(String.init) ?? "?")" }
             print("\(s.id.prefix(8)) pid \(s.pid) \(s.entrypoint ?? "?") host \(s.host)\(window) tty \(s.tty ?? "-") — \(s.title)")
+            if let url = s.openURL { print("    opens \(url.absoluteString)") }
             print("    \(s.state) since \(Fmt.time.string(from: s.since)), agents \(s.agents), commands \(s.commands), cwd \(s.cwd)")
             for a in s.agentNames { print("      agent: \(a)") }
             for c in s.commandLines { print("      command: \(c)") }

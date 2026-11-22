@@ -30,6 +30,12 @@ enum Navigator {
 extension Navigator {
     static func open(_ s: LiveSession) {
         Log.write("open session \(s.id.prefix(8)) host \(s.host)")
+        // The hosting app's own link to this session (see LiveSession.openURL): it knows its windows best.
+        if let url = s.openURL {
+            Log.write("open \(url.absoluteString)")
+            NSWorkspace.shared.open(url)
+            return
+        }
         switch s.host {
         case .vscode(let id):
             openVSCode(s, bundleID: id)
