@@ -4,6 +4,8 @@ import AppKit
 
 @MainActor
 final class AppModel: ObservableObject {
+    let agent: AgentKind
+    @Published var isRunning = false
     @Published var snapshot: UsageSnapshot?
     @Published var error: String?
     @Published var sessions: [SessionUsage] = []
@@ -16,11 +18,10 @@ final class AppModel: ObservableObject {
     @Published var live: [LiveSession] = []
     /// When each session was last looked at (clicked or "all read"); a state entered later wants attention.
     @Published private var readAt: [String: Date] = [:]
+    /// Dismissed idle sessions return when a new turn begins, without deleting their history.
+    private var hiddenBefore: [String: Date] = [:]
     /// Accessibility access: without it a VS Code window in front can't be matched to its sessions.
     @Published private(set) var axTrusted = FocusProbe.trusted
-    @Published var launchAtLogin = LoginItem.isEnabled {
-        didSet { LoginItem.setEnabled(launchAtLogin) }
-    }
     /// Plan chosen in the panel; nil follows the plan named in the Claude Code credentials.
     @Published var planChoice = UserDefaults.standard.string(forKey: "plan").flatMap(Plan.init(rawValue:)) {
         didSet { if store.isPersistent { UserDefaults.standard.set(planChoice?.rawValue, forKey: "plan") } }
@@ -31,12 +32,14 @@ final class AppModel: ObservableObject {
     var plan: Plan? { planChoice ?? detectedPlan }
     /// Weekly pace counts weekdays only: the weekly budget is meant for the working week.
     @Published var skipWeekends = UserDefaults.standard.bool(forKey: "skipWeekends") {
-        didSet { if store.isPersistent { UserDefaults.standard.set(skipWeekends, forKey: "skipWeekends") } }
+        didSet { if store.isPersistent { UserDefaults.standard.set(skipWeekends, forKey: agent.settingsKey("skipWeekends")) } }
     }
 
     let store: SampleStore
     private let scanner = LogScanner()
     private let liveScanner = LiveSessionScanner()
+    private let codexScanner = CodexScanner()
+    private let codexLiveScanner = CodexScanner()
     private let liveQueue = DispatchQueue(label: "claude-limits.live", qos: .utility)
     private var liveScanning = false
     private let scanQueue = DispatchQueue(label: "claude-limits.scan", qos: .utility)
@@ -47,15 +50,22 @@ final class AppModel: ObservableObject {
     /// Tokens the API rejected with 401/403: no polls until Claude Code puts a new one in the keychain.
     private var rejectedToken: String?
 
-    init(store: SampleStore = SampleStore()) {
+    init(agent: AgentKind = .claude, store: SampleStore? = nil) {
+        self.agent = agent
+        let store = store ?? SampleStore(agent: agent)
         self.store = store
         snapshot = Self.lastKnown(in: store)
+        skipWeekends = UserDefaults.standard.bool(forKey: agent.settingsKey("skipWeekends"))
         if store.isPersistent {
             let d = UserDefaults.standard
             // States entered before the feature first ran don't light up: the user has seen them already.
-            if d.object(forKey: "sessionsBaseline") == nil { d.set(Date().timeIntervalSince1970, forKey: "sessionsBaseline") }
-            baseline = Date(timeIntervalSince1970: d.double(forKey: "sessionsBaseline"))
-            readAt = (d.dictionary(forKey: "sessionReadAt") as? [String: Double] ?? [:]).mapValues { Date(timeIntervalSince1970: $0) }
+            let baselineKey = agent.settingsKey("sessionsBaseline")
+            if d.object(forKey: baselineKey) == nil { d.set(Date().timeIntervalSince1970, forKey: baselineKey) }
+            baseline = Date(timeIntervalSince1970: d.double(forKey: baselineKey))
+            readAt = (d.dictionary(forKey: agent.settingsKey("sessionReadAt")) as? [String: Double] ?? [:])
+                .mapValues { Date(timeIntervalSince1970: $0) }
+            hiddenBefore = (d.dictionary(forKey: agent.settingsKey("sessionHiddenBefore")) as? [String: Double] ?? [:])
+                .mapValues { Date(timeIntervalSince1970: $0) }
         }
     }
 
@@ -68,7 +78,9 @@ final class AppModel: ObservableObject {
         func window(_ v: Double?, _ reset: Date?) -> LimitWindow? {
             v.map { LimitWindow(utilization: $0, resetsAt: reset).current(at: now) }
         }
-        return UsageSnapshot(fetchedAt: s.t, fiveHour: window(s.five, s.fiveReset), sevenDay: window(s.week, s.weekReset))
+        return UsageSnapshot(fetchedAt: s.t, fiveHour: window(s.five, s.fiveReset),
+                             sevenDay: window(s.week, s.weekReset), codexPlan: s.codexPlan,
+                             ordinaryUsageAllowed: s.ordinaryUsageAllowed)
     }
 
     static let pollInterval: TimeInterval = 120
@@ -104,6 +116,8 @@ final class AppModel: ObservableObject {
 
     /// `force` polls even when nothing changed locally (start, the refresh button).
     func refresh(force: Bool = false) async {
+        if agent == .codex { await refreshCodex(force: force); return }
+        guard !loading else { return }
         now = Date()
         if let until = backoffUntil, now < until { return }
         var tokenChanged = false
@@ -171,6 +185,29 @@ final class AppModel: ObservableObject {
 
     private static func stamp(_ d: Date?) -> String { d.map { Fmt.dayTime.string(from: $0) } ?? "-" }
 
+    private func refreshCodex(force: Bool) async {
+        guard !loading, force || isRunning else { return }
+        now = Date()
+        if !force, let t = snapshot?.fetchedAt, now.timeIntervalSince(t) < Self.pollInterval { return }
+        loading = true
+        defer { loading = false }
+        do {
+            let snap = try await Task.detached(priority: .utility) { try CodexAPI.fetch() }.value
+            snapshot = snap
+            error = nil
+            store.append(snap)
+            Log.write("Codex usage: 5h \(Fmt.percent(snap.fiveHour?.utilization)), week \(Fmt.percent(snap.sevenDay?.utilization))")
+        } catch {
+            self.error = error.localizedDescription
+            Log.write("Codex usage request failed")
+        }
+        now = Date()
+    }
+
+    func usageText(_ value: Double) -> String {
+        agent == .claude ? String(format: "$%.2f", value) : String(format: "%.1fM", value / 1_000_000)
+    }
+
     @Published var diagnosing = false
     @Published var diagnosticsCopied = false
 
@@ -178,7 +215,23 @@ final class AppModel: ObservableObject {
     func runDiagnostics() async {
         diagnosing = true
         defer { diagnosing = false }
-        let text = await Diagnostics.report()
+        let text: String
+        if agent == .claude {
+            text = await Diagnostics.report()
+        } else {
+            let running = await Task.detached { CodexScanner.isRunning() }.value
+            text = """
+            Codex Limits diagnostics
+            CLI: \(CodexAPI.executable()?.path ?? "not found")
+            Running: \(running)
+            Sessions: \(live.count), working: \(workingCount), attention: \(attentionCount)
+            Plan: \(snapshot?.codexPlan ?? "unknown")
+            5h: \(Fmt.percent(snapshot?.fiveHour?.utilization))
+            Week: \(Fmt.percent(snapshot?.sevenDay?.utilization))
+            Last fetch: \(snapshot.map { Fmt.dayTime.string(from: $0.fetchedAt) } ?? "none")
+            Error: \(error ?? "none")
+            """
+        }
         try? text.write(to: Diagnostics.url, atomically: true, encoding: .utf8)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -189,8 +242,8 @@ final class AppModel: ObservableObject {
     }
 
     func rescanLogs() {
-        scanQueue.async { [scanner] in
-            let result = scanner.scan()
+        scanQueue.async { [scanner, codexScanner, agent] in
+            let result = agent == .claude ? scanner.scan() : codexScanner.scan()
             Log.write("log scan: \(result.count) sessions")
             Task { @MainActor in self.sessions = result }
         }
@@ -202,10 +255,15 @@ final class AppModel: ObservableObject {
         guard !liveScanning else { return }
         liveScanning = true
         let titles = Dictionary(sessions.map { ($0.id, $0.title) }) { a, _ in a }
-        liveQueue.async { [liveScanner] in
-            let result = liveScanner.scan(titles: titles)
+        liveQueue.async { [liveScanner, codexLiveScanner, agent] in
+            let result = agent == .claude ? liveScanner.scan(titles: titles) : codexLiveScanner.live(titles: titles)
+            let running = agent == .codex ? codexLiveScanner.isRunning : !result.isEmpty
             Task { @MainActor in
+                let result = result.filter(self.shouldShow)
                 self.liveScanning = false
+                let justStarted = running && !self.isRunning
+                if self.isRunning != running { self.isRunning = running }
+                if justStarted, agent == .codex { Task { await self.refreshCodex(force: true) } }
                 self.readFocused(result)
                 if result != self.live {
                     for s in result {
@@ -261,11 +319,28 @@ final class AppModel: ObservableObject {
         // Keep only sessions still alive, plus a day of the rest in case they come back.
         readAt = readAt.filter { k, v in live.contains { $0.id == k } || now.timeIntervalSince(v) < 86400 }
         if store.isPersistent {
-            UserDefaults.standard.set(readAt.mapValues { $0.timeIntervalSince1970 }, forKey: "sessionReadAt")
+            UserDefaults.standard.set(readAt.mapValues { $0.timeIntervalSince1970 },
+                                      forKey: agent.settingsKey("sessionReadAt"))
         }
     }
 
     func markAllRead() { markRead(live.map(\.id)) }
+
+    func shouldShow(_ session: LiveSession) -> Bool {
+        guard session.state == .idle || session.state == .stopped,
+              let hidden = hiddenBefore[session.id] else { return true }
+        return session.since > hidden
+    }
+
+    func hideSession(_ session: LiveSession) {
+        guard session.state == .idle || session.state == .stopped else { return }
+        hiddenBefore[session.id] = Date()
+        live.removeAll { $0.id == session.id }
+        if store.isPersistent {
+            UserDefaults.standard.set(hiddenBefore.mapValues { $0.timeIntervalSince1970 },
+                                      forKey: agent.settingsKey("sessionHiddenBefore"))
+        }
+    }
 
     func openSession(_ s: LiveSession) {
         markRead([s.id])

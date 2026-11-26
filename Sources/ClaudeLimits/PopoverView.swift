@@ -2,9 +2,26 @@ import SwiftUI
 import AppKit
 
 struct PopoverView: View {
-    @EnvironmentObject var model: AppModel
+    @ObservedObject var agents: AgentsModel
     nonisolated static let width: CGFloat = 540
     nonisolated static let height: CGFloat = 760
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Агент", selection: $agents.selected) {
+                ForEach(AgentKind.allCases) { agent in
+                    Text(agent.title).tag(agent)
+                }
+            }
+            .pickerStyle(.segmented).padding(.horizontal, 16).padding(.vertical, 8)
+            AgentPage().environmentObject(agents.current).environmentObject(agents).id(agents.selected)
+        }
+    }
+}
+
+private struct AgentPage: View {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var agents: AgentsModel
     @StateObject private var scroller = ScrollerInset()
 
     var body: some View {
@@ -30,7 +47,7 @@ struct PopoverView: View {
             Divider()
             footer.padding(.horizontal, 16).padding(.vertical, 10)
         }
-        .frame(width: Self.width + scroller.width, height: model.panelHeight)
+        .frame(width: PopoverView.width + scroller.width, height: model.panelHeight - 40)
         .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
             scroller.width = ScrollerInset.current()
         }
@@ -38,7 +55,7 @@ struct PopoverView: View {
 
     private var footer: some View {
         HStack {
-            Toggle("Запускать при входе", isOn: $model.launchAtLogin)
+            Toggle("Запускать при входе", isOn: $agents.launchAtLogin)
                 .toggleStyle(.checkbox)
             Spacer()
             if model.diagnosticsCopied {
@@ -60,7 +77,9 @@ struct PopoverView: View {
                 Image(systemName: "stethoscope")
             }
             .disabled(model.diagnosing)
-            .help("Диагностика: проверить логины и прокси, скопировать отчёт без токенов")
+            .help(model.agent == .claude
+                  ? "Диагностика: проверить логины и прокси, скопировать отчёт без токенов"
+                  : "Диагностика Codex: проверить CLI, процессы и чтение лимитов; отчёт без токенов")
             Button("Выход") { NSApp.terminate(nil) }
         }
     }
@@ -88,7 +107,7 @@ struct PanelPart: View {
         case .limits:
             LimitRows()
         case .sessions:
-            Section("Сессии Claude Code") { LiveSessionsView() } trailing: {
+            Section("Сессии \(model.agent.sessionTitle)") { LiveSessionsView() } trailing: {
                 if !model.live.isEmpty {
                     Text("работают \(model.workingCount) · ждут вас \(model.attentionCount)")
                         .font(.callout).foregroundStyle(.secondary)
@@ -99,7 +118,11 @@ struct PanelPart: View {
         case .top:
             Section("Топ сессий") { TopSessionsView() }
         case .plan:
-            Section("Какой тариф нужен") { PlanFitView() } trailing: { PlanPicker() }
+            if model.agent == .claude {
+                Section("Какой тариф нужен") { PlanFitView() } trailing: { PlanPicker() }
+            } else {
+                CodexPlanView()
+            }
         }
     }
 }
@@ -151,6 +174,15 @@ private struct LimitRows: View {
             Toggle("Недельный темп без выходных", isOn: $model.skipWeekends)
                 .toggleStyle(.checkbox).font(.callout).foregroundStyle(.secondary)
                 .help("Цвет недельного лимита считается так, будто тратить его можно только в будни")
+            if model.agent == .codex, model.snapshot?.ordinaryUsageAllowed == false {
+                Text("Включённое использование сейчас недоступно по данным Codex.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            if model.agent == .codex, model.snapshot != nil,
+               model.snapshot?.fiveHour == nil, model.snapshot?.sevenDay == nil {
+                Text("Codex не сообщает 5-часовое или недельное окно для этого аккаунта.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -253,6 +285,11 @@ private struct LiveSessionsView: View {
                         .buttonStyle(.plain)
                         .focusEffectDisabled()
                         .help("Перейти к сессии — \(Self.hostName(s))")
+                        .contextMenu {
+                            if s.state == .idle || s.state == .stopped {
+                                Button("Скрыть до нового сообщения") { model.hideSession(s) }
+                            }
+                        }
                     nested(s)
                 }
             }
@@ -349,6 +386,31 @@ private struct LiveSessionsView: View {
 }
 
 // MARK: - Plan fit: recorded windows replayed on Pro / Max / Ultra, or on the Team seats
+
+private struct CodexPlanView: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        let cutoff = model.now.addingTimeInterval(-28 * 86400)
+        let five = model.store.windows.five.filter { $0.last >= cutoff }
+        let week = model.store.windows.week.filter { $0.last >= cutoff }
+        Section("Тариф Codex") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(model.snapshot?.codexPlan.map { "Текущий тариф: \($0)" } ?? "Тариф пока не определён")
+                    .font(.callout.bold())
+                ForEach([("5 часов", five), ("Неделя", week)], id: \.0) { title, windows in
+                    if let peak = windows.map(\.peak).max() {
+                        Text("\(title): пик \(Fmt.percent(peak)) · упор в лимит \(windows.filter { $0.peak >= 100 }.count) из \(windows.count) окон")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("История за 28 дней. Codex не сообщает коэффициенты лимитов других тарифов, поэтому пересчёт между тарифами недоступен.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
 
 private struct PlanPicker: View {
     @EnvironmentObject var model: AppModel
@@ -497,13 +559,13 @@ private struct HeatmapView: View {
         // Without a weekly reading the scale falls back to dollars.
         let values = model.logHourly(since: days.first!).mapValues { $0 * (rate ?? 1) }
         let maxV = values.values.max() ?? 0
-        let unit: (Double) -> String = { rate != nil ? Fmt.share($0) : String(format: "$%.2f", $0) }
+        let unit: (Double) -> String = { rate != nil ? Fmt.share($0) : model.usageText($0) }
         let rows = days.map { day -> (Date, Double) in
             let h0 = Int(day.timeIntervalSince1970 / 3600)
             return (day, (h0..<h0 + 24).reduce(0) { $0 + (values[$1] ?? 0) })
         }
 
-        Section(rate != nil ? "Расход недельного лимита за 7 дней" : "Расход Claude Code за 7 дней") {
+        Section(rate != nil ? "Расход недельного лимита за 7 дней" : "Расход \(model.agent.sessionTitle) за 7 дней") {
             VStack(alignment: .leading, spacing: gap) {
                 HStack(spacing: gap) {
                     Spacer().frame(width: dayWidth)
@@ -546,7 +608,9 @@ private struct HeatmapView: View {
             let total = rows.reduce(0) { $0 + $1.1 }
             if total > 0 { Text("всего \(unit(total))").font(.callout).foregroundStyle(.secondary) }
         }
-        .help(rate != nil ? "Доля недельного лимита — оценка по логам Claude Code: расход в $ по ценам API пересчитан по текущему недельному проценту" : "")
+        .help(model.agent == .codex
+              ? "Доля лимита — приблизительное распределение по токенам локальных сессий. Модели, кэш и другие устройства могут менять реальную долю. Без недельного лимита показаны миллионы токенов."
+              : "Доля недельного лимита — оценка по логам Claude Code: расход в $ по ценам API пересчитан по текущему недельному проценту")
     }
 
     private func fill(_ v: Double, max m: Double, future: Bool) -> Color {
@@ -566,7 +630,7 @@ private struct TopSessionsView: View {
         let top = model.topSessions()
         let maxCost = top.first?.cost ?? 1
         if top.isEmpty {
-            Text("Нет сессий Claude Code в текущем недельном окне.")
+            Text("Нет сессий \(model.agent.sessionTitle) в текущем недельном окне.")
                 .font(.caption).foregroundStyle(.secondary)
         } else {
             VStack(spacing: 6) {
@@ -575,7 +639,7 @@ private struct TopSessionsView: View {
                         .buttonStyle(.plain)
                         .help("Нажмите, чтобы скопировать команду продолжения сессии")
                 }
-                Text("% — оценка доли недельного лимита по логам Claude Code. Клик копирует команду `claude --resume`.")
+                Text("% — оценка доли недельного лимита по локальным логам \(model.agent.sessionTitle). Клик копирует команду `\(model.agent.resumeCommand)`.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -595,10 +659,11 @@ private struct TopSessionsView: View {
                 Capsule().fill(Palette.color(frac)).frame(width: max(6, 120 * frac))
             }
             .frame(width: 120, height: 6)
-            Text(t.weeklyPercent.map(Fmt.share) ?? String(format: "$%.2f", t.cost))
+            Text(t.weeklyPercent.map(Fmt.share) ?? model.usageText(t.cost))
                 .font(.callout.monospacedDigit().bold())
                 .frame(width: 52, alignment: .trailing)
-                .help(String(format: "$%.2f по ценам API", t.cost))
+                .help(model.agent == .claude ? String(format: "$%.2f по ценам API", t.cost)
+                      : "\(Int(t.cost)) токенов; доля лимита — оценка")
         }
         .contentShape(Rectangle())
         .overlay(alignment: .topTrailing) {
@@ -616,7 +681,7 @@ private struct TopSessionsView: View {
     }
 
     private func copyResume(_ s: SessionUsage) {
-        var cmd = "claude --resume \(s.id)"
+        var cmd = "\(model.agent.resumeCommand) \(shellQuote(s.id))"
         if let cwd = s.cwd { cmd = "cd \(shellQuote(cwd)) && " + cmd }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(cmd, forType: .string)

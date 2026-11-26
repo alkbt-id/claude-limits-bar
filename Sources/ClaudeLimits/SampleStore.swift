@@ -7,6 +7,8 @@ struct Sample: Codable {
     var fiveReset: Date?
     var week: Double?
     var weekReset: Date?
+    var codexPlan: String? = nil
+    var ordinaryUsageAllowed: Bool? = nil
 }
 
 /// Append-only history of polls, stored as JSON in Application Support.
@@ -29,16 +31,17 @@ final class SampleStore {
         for s in samples { record(s, plan: plan) }
     }
 
-    init() {
+    init(agent: AgentKind = .claude) {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ClaudeLimits", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("samples.json")
+        let prefix = agent == .claude ? "" : "codex-"
+        let url = dir.appendingPathComponent("\(prefix)samples.json")
         self.url = url
         if let d = try? Data(contentsOf: url), let s = try? Self.decoder.decode([Sample].self, from: d) {
             samples = s
         }
-        let windowsURL = dir.appendingPathComponent("windows.json")
+        let windowsURL = dir.appendingPathComponent("\(prefix)windows.json")
         self.windowsURL = windowsURL
         if let d = try? Data(contentsOf: windowsURL), let w = try? Self.decoder.decode(WindowHistory.self, from: d) {
             windows = w
@@ -51,7 +54,8 @@ final class SampleStore {
     func append(_ snap: UsageSnapshot) {
         let sample = Sample(t: snap.fetchedAt,
                             five: snap.fiveHour?.utilization, fiveReset: snap.fiveHour?.resetsAt,
-                            week: snap.sevenDay?.utilization, weekReset: snap.sevenDay?.resetsAt)
+                            week: snap.sevenDay?.utilization, weekReset: snap.sevenDay?.resetsAt,
+                            codexPlan: snap.codexPlan, ordinaryUsageAllowed: snap.ordinaryUsageAllowed)
         samples.append(sample)
         let cutoff = Date().addingTimeInterval(-keep)
         samples.removeAll { $0.t < cutoff }

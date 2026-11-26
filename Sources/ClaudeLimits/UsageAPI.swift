@@ -80,6 +80,9 @@ struct UsageSnapshot: Codable, Equatable {
     var claudeCodeShare: Double?
     /// Plan from the Claude Code credentials, if they name it.
     var plan: Plan?
+    /// Codex plan and availability are reported by its own account endpoint.
+    var codexPlan: String? = nil
+    var ordinaryUsageAllowed: Bool? = nil
 }
 
 enum UsageError: LocalizedError {

@@ -18,6 +18,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ClaudeLimits"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/claude.png Resources/codex.svg "$APP/Contents/Resources/"
 # Ad-hoc signature with a designated requirement on the bundle id only: macOS privacy permissions
 # (Accessibility, Automation) are tied to it and survive rebuilds instead of resetting each time.
 codesign --force --sign - -r='designated => identifier "io.github.alkbt-id.claude-limits"' "$APP" >/dev/null

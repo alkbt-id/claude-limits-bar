@@ -7,18 +7,18 @@ import Combine
 /// or over the number of the rest (idle, already seen) in gray when none waits.
 @MainActor
 final class StatusItemController: NSObject {
-    private let model: AppModel
+    private let model: AgentsModel
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private var bag = Set<AnyCancellable>()
 
-    init(model: AppModel) {
+    init(model: AgentsModel) {
         self.model = model
         super.init()
 
         popover.behavior = .transient
         popover.animates = true
-        let host = NSHostingController(rootView: PopoverView().environmentObject(model))
+        let host = NSHostingController(rootView: PopoverView(agents: model))
         // The size is set before each show instead: a size SwiftUI reports later, after the popover
         // is placed, can leave it pushed up past the top of the screen.
         host.sizingOptions = []
@@ -45,8 +45,8 @@ final class StatusItemController: NSObject {
             model.rescanLogs()
             // A panel taller than the screen below the menu bar would be pushed up over it, its top cut off.
             let screen = button.window?.screen ?? NSScreen.main
-            if let screen { model.panelHeight = min(PopoverView.height, screen.visibleFrame.height - 30) }
-            popover.contentSize = NSSize(width: PopoverView.width + ScrollerInset.current(), height: model.panelHeight)
+            if let screen { model.setPanelHeight(min(PopoverView.height, screen.visibleFrame.height - 30)) }
+            popover.contentSize = NSSize(width: PopoverView.width + ScrollerInset.current(), height: model.current.panelHeight)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             let frame = popover.contentViewController?.view.window?.frame
             if let frame, let screen, frame.maxY > screen.visibleFrame.maxY + 1 {
@@ -59,13 +59,32 @@ final class StatusItemController: NSObject {
 
     private func render() {
         guard let button = item.button else { return }
+        item.isVisible = !model.active.isEmpty
+        if model.active.isEmpty, popover.isShown { popover.performClose(nil) }
         button.image = Self.image(for: model)
         // Errors are shown only inside the panel; the menu bar stays quiet.
-        var tip = "Лимиты Claude — нажмите, чтобы открыть панель"
-        if !model.live.isEmpty {
-            tip += "\nСессий Claude Code: \(model.live.count) · работают: \(model.workingCount) · ждут вас: \(model.attentionCount)"
+        var tip = "Лимиты агентов — нажмите, чтобы открыть панель"
+        for agent in model.active {
+            tip += "\n\(agent.agent.sessionTitle): \(agent.live.count) · работают: \(agent.workingCount) · ждут вас: \(agent.attentionCount)"
         }
         button.toolTip = tip
+    }
+
+    static func image(for model: AgentsModel) -> NSImage {
+        let parts = model.active.map { agent -> (NSImage, NSImage) in
+            (AgentIcons.image(for: agent.agent), image(for: agent))
+        }
+        let width = parts.reduce(CGFloat(0)) { $0 + $1.1.size.width + 24 }
+        return NSImage(size: NSSize(width: max(1, width), height: 22), flipped: false) { _ in
+            var x: CGFloat = 0
+            for part in parts {
+                part.0.draw(at: NSPoint(x: x, y: 3), from: .zero, operation: .sourceOver, fraction: 1)
+                x += 19
+                part.1.draw(at: NSPoint(x: x, y: 0), from: .zero, operation: .sourceOver, fraction: 1)
+                x += part.1.size.width + 5
+            }
+            return true
+        }
     }
 
     static func image(for model: AppModel) -> NSImage {

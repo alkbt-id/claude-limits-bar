@@ -24,6 +24,19 @@ enum Navigator {
         "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "dev.warp.Warp-Stable",
         "net.kovidgoyal.kitty", "org.alacritty", "com.github.wez.wezterm",
     ]
+
+    /// VS Code routes the URI to the existing extension host named by windowId.
+    /// Codex's URI handler forwards /local/<id> to its sidebar router.
+    static func codexVSCodeURL(sessionID: String, bundleID: String, windowID: Int?) -> URL? {
+        guard UUID(uuidString: sessionID) != nil, let scheme = vscodeSchemes[bundleID],
+              let windowID, windowID > 0 else { return nil }
+        var components = URLComponents()
+        components.scheme = scheme
+        components.host = "openai.chatgpt"
+        components.path = "/local/\(sessionID)"
+        components.queryItems = [URLQueryItem(name: "windowId", value: String(windowID))]
+        return components.url
+    }
 }
 
 @MainActor
@@ -31,7 +44,7 @@ extension Navigator {
     static func open(_ s: LiveSession) {
         Log.write("open session \(s.id.prefix(8)) host \(s.host)")
         // The hosting app's own link to this session (see LiveSession.openURL): it knows its windows best.
-        if let url = s.openURL {
+        if let url = s.openURL ?? codexVSCodeURL(for: s) {
             Log.write("open \(url.absoluteString)")
             NSWorkspace.shared.open(url)
             return
@@ -50,6 +63,18 @@ extension Navigator {
     }
 
     // MARK: VS Code
+
+    private static func codexVSCodeURL(for session: LiveSession) -> URL? {
+        guard session.entrypoint == "codex" else { return nil }
+        let bundleID: String?
+        switch session.host {
+        case .vscode(let id), .other(let id?): bundleID = id
+        default: bundleID = nil
+        }
+        guard let bundleID, vscodeSchemes[bundleID] != nil else { return nil }
+        let window = vscodeWindowID(claudePID: session.pid, appPID: session.hostPID, bundleID: bundleID)
+        return codexVSCodeURL(sessionID: session.id, bundleID: bundleID, windowID: window)
+    }
 
     /// Sends the extension's own link with `windowId`: VS Code routes it to exactly that window,
     /// the extension reveals the session's tab (or the sidebar holding it), and VS Code focuses the window.

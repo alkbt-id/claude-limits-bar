@@ -69,6 +69,7 @@ final class LiveSessionScanner: @unchecked Sendable {
     /// `CLAUDE_LIMITS_OPEN_URL` of each process, "" when it has none: the environment is read once per process.
     private var openLinks: [Int32: String] = [:]
     private var copilot: [Int32: Bool] = [:]
+    private var historyDisabled: [Int32: Bool] = [:]
 
     static let openURLVar = "CLAUDE_LIMITS_OPEN_URL"
 
@@ -125,6 +126,13 @@ final class LiveSessionScanner: @unchecked Sendable {
             let (state, since) = Self.state(status: status, waitingFor: o["waitingFor"] as? String, statusAt: statusAt,
                                             tail: tail, agents: agents, commands: commands, reportsPrompts: entrypoint == "cli",
                                             startedTools: startedTools)
+            let hasConversation = tail?.hasConversation ?? (titles[sid] != nil)
+            if !hasConversation, entrypoint == "claude-vscode", historyDisabled[pid] == nil {
+                historyDisabled[pid] = !(Proc.environment(pid)?["CLAUDE_CODE_SKIP_PROMPT_HISTORY"] ?? "").isEmpty
+            }
+            guard Self.shouldShow(state: state, entrypoint: entrypoint,
+                                  hasConversation: hasConversation,
+                                  historyDisabled: historyDisabled[pid] == true) else { continue }
             if state == .idle || state == .stopped,
                windowless(pid: pid, session: sid, entrypoint: entrypoint, startedAt: procStart, readLogs: startedTools) { continue }
 
@@ -150,7 +158,18 @@ final class LiveSessionScanner: @unchecked Sendable {
         hosts = hosts.filter { alivePIDs.contains($0.key) }
         openLinks = openLinks.filter { alivePIDs.contains($0.key) }
         copilot = copilot.filter { alivePIDs.contains($0.key) }
+        historyDisabled = historyDisabled.filter { alivePIDs.contains($0.key) }
         return out
+    }
+
+    /// The VS Code extension prestarts a process for an empty tab. It is not a conversation yet.
+    /// Other hosts may keep their transcripts elsewhere, so missing local data is not conclusive.
+    static func shouldShow(
+        state: LiveSession.State, entrypoint: String?, hasConversation: Bool,
+        historyDisabled: Bool = false
+    ) -> Bool {
+        entrypoint != "claude-vscode" || hasConversation || historyDisabled
+            || (state != .idle && state != .stopped)
     }
 
     /// VS Code keeps a session's process after no window shows it: its window closed, or its panel switched
@@ -320,6 +339,7 @@ final class TranscriptTail {
     /// The latest user prompt: when the current turn started.
     private(set) var turnStart: Date?
     private(set) var modified = Date.distantPast
+    private(set) var hasConversation = false
     private var customTitle: String?, aiTitle: String?, lastPrompt: String?
     var title: String? { customTitle ?? aiTitle ?? lastPrompt.map { String($0.prefix(80)) } }
 
@@ -330,7 +350,10 @@ final class TranscriptTail {
         guard let a = try? FileManager.default.attributesOfItem(atPath: url.path) else { return }
         modified = a[.modificationDate] as? Date ?? modified
         let size = (a[.size] as? NSNumber)?.uint64Value ?? 0
-        if size < offset { offset = 0; pending = [:]; last = .none }
+        if size < offset {
+            offset = 0; pending = [:]; last = .none; lastAt = nil; turnStart = nil
+            customTitle = nil; aiTitle = nil; lastPrompt = nil; hasConversation = false
+        }
         guard size > offset, let h = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? h.close() }
         try? h.seek(toOffset: offset)
@@ -357,7 +380,12 @@ final class TranscriptTail {
         switch type {
         case "custom-title": customTitle = (o["customTitle"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? customTitle
         case "ai-title": aiTitle = (o["aiTitle"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? aiTitle
-        case "last-prompt": lastPrompt = (o["lastPrompt"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? lastPrompt
+        case "last-prompt":
+            if let prompt = o["lastPrompt"] as? String,
+               !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lastPrompt = prompt
+                hasConversation = true
+            }
         case "assistant", "user":
             if o["isSidechain"] as? Bool == true || o["isMeta"] as? Bool == true { return }
             // A background task notice that came when no turn could take it (after the turn ended, or on resume)
@@ -366,6 +394,15 @@ final class TranscriptTail {
             guard let msg = o["message"] as? [String: Any] else { return }
             let ts = (o["timestamp"] as? String).flatMap(UsageAPI.parseDate) ?? Date()
             let blocks = msg["content"] as? [[String: Any]] ?? []
+            let text = (msg["content"] as? String) ?? ""
+            let hasContent = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || blocks.contains { block in
+                    guard let type = block["type"] as? String else { return false }
+                    if type != "text" { return true }
+                    return !(block["text"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+            if hasContent, msg["model"] as? String != "<synthetic>" { hasConversation = true }
             if type == "assistant" {
                 for b in blocks where b["type"] as? String == "tool_use" {
                     if let id = b["id"] as? String { pending[id] = (b["name"] as? String ?? "?", ts) }

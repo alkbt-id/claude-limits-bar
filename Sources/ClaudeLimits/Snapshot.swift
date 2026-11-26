@@ -14,11 +14,27 @@ enum Snapshot {
             await model.refresh()
             model.sessions = LogScanner().scan()
         }
+        let codex = demo ? demoModel(agent: .codex) : AppModel(agent: .codex)
+        if !demo {
+            await codex.refresh(force: true)
+            codex.sessions = CodexScanner().scan()
+            codex.live = CodexScanner().live()
+        }
+        model.isRunning = !model.live.isEmpty
+        codex.isRunning = !codex.live.isEmpty
+        let agents = AgentsModel(claude: model, codex: codex)
 
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let suffix = appearance == .aqua ? "light" : "dark"
-            await render(PopoverView(), model: model, appearance: appearance, width: PopoverView.width + ScrollerInset.current(),
+            agents.selected = .claude
+            await render(PopoverView(agents: agents), model: model, appearance: appearance, width: PopoverView.width + ScrollerInset.current(),
                          height: PopoverView.height, to: dir.appendingPathComponent("panel-\(suffix).png"))
+            agents.selected = .codex
+            await render(PopoverView(agents: agents), model: codex, appearance: appearance,
+                         width: PopoverView.width + ScrollerInset.current(), height: PopoverView.height,
+                         to: dir.appendingPathComponent("codex-panel-\(suffix).png"))
+            saveMenuBarImage(StatusItemController.image(for: agents), appearance: appearance,
+                             to: dir.appendingPathComponent("agents-menubar-\(suffix).png"))
             // Each block on its own, at its natural height, for the README.
             for part in [PanelPart.Kind.sessions, .usage, .plan] {
                 await render(PanelPart(kind: part).padding(16), model: model, appearance: appearance, height: nil,
@@ -52,7 +68,10 @@ enum Snapshot {
     }
 
     private static func saveMenuBar(_ model: AppModel, appearance: NSAppearance.Name, to url: URL) {
-        let img = StatusItemController.image(for: model)
+        saveMenuBarImage(StatusItemController.image(for: model), appearance: appearance, to: url)
+    }
+
+    private static func saveMenuBarImage(_ img: NSImage, appearance: NSAppearance.Name, to url: URL) {
         let bar = NSView(frame: NSRect(x: 0, y: 0, width: img.size.width + 24, height: 24))
         bar.appearance = NSAppearance(named: appearance)
         bar.wantsLayer = true
@@ -66,7 +85,7 @@ enum Snapshot {
         save(bar, to: url)
     }
 
-    private static func demoModel() -> AppModel {
+    private static func demoModel(agent: AgentKind = .claude) -> AppModel {
         let now = Date()
         let cal = Calendar.current
         let fiveReset = now.addingTimeInterval(2 * 3600 + 13 * 60)
@@ -99,7 +118,7 @@ enum Snapshot {
             t.addTimeInterval(1800)
         }
 
-        let model = AppModel(store: SampleStore(samples: samples, plan: .max))
+        let model = AppModel(agent: agent, store: SampleStore(samples: samples, plan: .max))
         model.planChoice = .max
         model.snapshot = UsageSnapshot(fetchedAt: now,
                                        fiveHour: LimitWindow(utilization: 42, resetsAt: fiveReset),
@@ -143,6 +162,16 @@ enum Snapshot {
             live("Ревью PR #482", "web-app", vscode, .idle, ago: 2400),
         ]
         model.markRead([model.live[5].id])
+        if agent == .codex {
+            model.snapshot?.fable = nil
+            model.snapshot?.plan = nil
+            model.snapshot?.codexPlan = "plus"
+            model.sessions = model.sessions.map { session in
+                var session = session
+                session.hourly = session.hourly.mapValues { $0 * 100_000 }
+                return session
+            }
+        }
         return model
     }
 
