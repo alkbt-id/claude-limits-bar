@@ -95,7 +95,7 @@ final class CodexScanner: @unchecked Sendable {
             let state = Self.liveState(base: t.state, agents: names.count, commands: activeCommands.count)
             let host = Self.host(of: pid)
             let active: Bool?
-            if case .other(let bundleID?) = host.0, Navigator.vscodeDataDirs[bundleID] != nil {
+            if case .vscode(let bundleID) = host.0 {
                 active = viewActivity.active(sessionID: id, serverPID: pid,
                                              hostPID: host.1, bundleID: bundleID)
             } else { active = nil }
@@ -339,8 +339,8 @@ final class CodexScanner: @unchecked Sendable {
             p = parent
             guard let app = NSRunningApplication(processIdentifier: p),
                   let id = app.bundleIdentifier else { continue }
+            if Navigator.vscodeSchemes[id] != nil { return (.vscode(bundleID: id), p) }
             if Navigator.terminalBundleIDs.contains(id) { return (.terminal(bundleID: id), p) }
-            // A Claude-specific VS Code link must never be used to navigate to Codex.
             return (.other(bundleID: id), p)
         }
         return (.other(bundleID: nil), nil)
