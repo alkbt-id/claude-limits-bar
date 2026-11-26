@@ -281,15 +281,30 @@ private struct LiveSessionsView: View {
                     trailing()
                 }
                 ForEach(items) { s in
-                    Button { model.openSession(s) } label: { row(s) }
-                        .buttonStyle(.plain)
-                        .focusEffectDisabled()
-                        .help("Перейти к сессии — \(Self.hostName(s))")
-                        .contextMenu {
-                            if s.state == .idle || s.state == .stopped {
-                                Button("Скрыть до нового сообщения") { model.hideSession(s) }
+                    HStack(spacing: 6) {
+                        Button { model.openSession(s) } label: { row(s) }
+                            .buttonStyle(.plain)
+                            .focusEffectDisabled()
+                            .help("Перейти к сессии — \(Self.hostName(s))")
+                            .contextMenu {
+                                if s.state == .idle || s.state == .stopped {
+                                    Button("Скрыть до нового сообщения") { model.hideSession(s) }
+                                }
                             }
+                        if s.state == .idle || s.state == .stopped {
+                            Button { model.hideSession(s) } label: {
+                                Image(systemName: "eye.slash")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 24, height: 24)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .focusEffectDisabled()
+                            .help("Скрыть чат до нового сообщения")
+                            .accessibilityLabel("Скрыть чат «\(s.title)» до нового сообщения")
                         }
+                    }
                     nested(s)
                 }
             }
