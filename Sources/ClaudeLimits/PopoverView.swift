@@ -57,6 +57,17 @@ private struct AgentPage: View {
         HStack {
             Toggle("Запускать при входе", isOn: $agents.launchAtLogin)
                 .toggleStyle(.checkbox)
+                .fixedSize()
+            Picker(selection: $agents.sleepAfterMinutes) {
+                ForEach(Set(AgentsModel.sleepAfterChoices + [agents.sleepAfterMinutes]).sorted(), id: \.self) { m in
+                    Text(m < 60 || m % 60 != 0 ? "\(m) мин" : "\(m / 60) ч").tag(m)
+                }
+            } label: {
+                Image(systemName: "zzz")
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+            .help("Агент без работы и без ваших ответов засыпает через это время после последнего действия: в строке меню остаётся только его значок")
             Spacer()
             if model.diagnosticsCopied {
                 Text("отчёт скопирован").font(.caption).foregroundStyle(.green)

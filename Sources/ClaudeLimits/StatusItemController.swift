@@ -5,6 +5,8 @@ import Combine
 /// Menu bar item: "5ч 42% 11:49" over "7д 8% Пн 20:59" in two small lines, percent colored by how much of the limit is spent.
 /// While Claude Code sessions run, a column on the left shows ▶2 (working) over 🔔1 (waiting for you),
 /// or over the number of the rest (idle, already seen) in gray when none waits.
+/// A closed agent, or one with nothing working, nobody waiting and no state change for the time set in the panel
+/// (30 minutes by default), sleeps: only its dimmed icon with "zᶻ" stays.
 @MainActor
 final class StatusItemController: NSObject {
     private let model: AgentsModel
@@ -59,30 +61,44 @@ final class StatusItemController: NSObject {
 
     private func render() {
         guard let button = item.button else { return }
-        item.isVisible = !model.active.isEmpty
-        if model.active.isEmpty, popover.isShown { popover.performClose(nil) }
+        // Always shown: a closed agent sleeps too, so the panel with the limits stays one click away.
+        item.isVisible = true
         button.image = Self.image(for: model)
         // Errors are shown only inside the panel; the menu bar stays quiet.
         var tip = "Лимиты агентов — нажмите, чтобы открыть панель"
-        for agent in model.active {
-            tip += "\n\(agent.agent.sessionTitle): \(agent.live.count) · работают: \(agent.workingCount) · ждут вас: \(agent.attentionCount)"
+        for agent in model.all {
+            let title = agent.agent.sessionTitle
+            tip += !agent.isRunning ? "\n\(title): не запущен"
+                : model.isAsleep(agent) ? "\n\(title): спит · сессий: \(agent.live.count)"
+                : "\n\(title): \(agent.live.count) · работают: \(agent.workingCount) · ждут вас: \(agent.attentionCount)"
         }
         button.toolTip = tip
     }
 
+    /// One block per agent: its icon, then counters and limits. A sleeping agent (closed, or nothing
+    /// works, nobody waits and nothing changed for the set time) shows only its dimmed icon with "zᶻ".
     static func image(for model: AgentsModel) -> NSImage {
-        let parts = model.active.map { agent -> (NSImage, NSImage) in
-            (AgentIcons.image(for: agent.agent), image(for: agent))
+        let parts = model.all.map { agent -> NSImage in
+            model.isAsleep(agent) ? AgentIcons.sleeping(agent.agent) : awake(agent)
         }
-        let width = parts.reduce(CGFloat(0)) { $0 + $1.1.size.width + 24 }
+        let width = parts.reduce(CGFloat(0)) { $0 + $1.size.width + 5 }
         return NSImage(size: NSSize(width: max(1, width), height: 22), flipped: false) { _ in
             var x: CGFloat = 0
             for part in parts {
-                part.0.draw(at: NSPoint(x: x, y: 3), from: .zero, operation: .sourceOver, fraction: 1)
-                x += 19
-                part.1.draw(at: NSPoint(x: x, y: 0), from: .zero, operation: .sourceOver, fraction: 1)
-                x += part.1.size.width + 5
+                part.draw(at: NSPoint(x: x, y: 0), from: .zero, operation: .sourceOver, fraction: 1)
+                x += part.size.width + 5
             }
+            return true
+        }
+    }
+
+    /// The agent's icon followed by its counters and limits.
+    private static func awake(_ agent: AppModel) -> NSImage {
+        let icon = AgentIcons.image(for: agent.agent)
+        let block = image(for: agent)
+        return NSImage(size: NSSize(width: 19 + block.size.width, height: 22), flipped: false) { _ in
+            icon.draw(at: NSPoint(x: 0, y: 3), from: .zero, operation: .sourceOver, fraction: 1)
+            block.draw(at: NSPoint(x: 19, y: 0), from: .zero, operation: .sourceOver, fraction: 1)
             return true
         }
     }

@@ -19,6 +19,17 @@ final class AgentsModel: ObservableObject {
     @Published var launchAtLogin = LoginItem.isEnabled {
         didSet { LoginItem.setEnabled(launchAtLogin) }
     }
+    /// How long an agent with nothing working and nobody waiting stays awake after its last state change.
+    @Published var sleepAfterMinutes = AgentsModel.storedSleepAfter {
+        didSet { UserDefaults.standard.set(sleepAfterMinutes, forKey: "sleepAfterMinutes") }
+    }
+    static let sleepAfterChoices = [5, 15, 30, 60, 120]
+    private static var storedSleepAfter: Int {
+        let minutes = UserDefaults.standard.integer(forKey: "sleepAfterMinutes")
+        return minutes > 0 ? minutes : 30
+    }
+    func isAsleep(_ agent: AppModel) -> Bool { agent.isAsleep(after: TimeInterval(sleepAfterMinutes * 60)) }
+
     private var bag = Set<AnyCancellable>()
     private var choseInitialAgent = false
 
@@ -42,7 +53,8 @@ final class AgentsModel: ObservableObject {
     }
 
     var current: AppModel { selected == .claude ? claude : codex }
-    var active: [AppModel] { [claude, codex].filter(\.isRunning) }
+    var all: [AppModel] { [claude, codex] }
+    var active: [AppModel] { all.filter(\.isRunning) }
     func start() { claude.start(); codex.start() }
     func rescanLogs() { claude.rescanLogs(); codex.rescanLogs() }
     func setPanelHeight(_ height: CGFloat) {

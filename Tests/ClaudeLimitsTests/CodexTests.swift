@@ -249,6 +249,29 @@ final class CodexTests: XCTestCase {
     }
 
     @MainActor
+    func testAgentSleepsWhenClosedOrIdlePastThreshold() {
+        let model = AppModel(agent: .codex, store: SampleStore(samples: []))
+        XCTAssertTrue(model.isAsleep(after: 1800))
+        model.isRunning = true
+        var session = LiveSession(id: id, pid: 1, title: "Chat", cwd: "/project",
+                                  entrypoint: "codex", state: .idle,
+                                  since: model.now.addingTimeInterval(-600), agentNames: [], commandLines: [],
+                                  host: .other(bundleID: "com.microsoft.VSCode"), hostPID: nil, tty: nil)
+        model.live = [session]
+        // An unseen reply waits for you: awake however old it is.
+        XCTAssertFalse(model.isAsleep(after: 300))
+        model.markAllRead()
+        XCTAssertFalse(model.isAsleep(after: 1800))
+        XCTAssertTrue(model.isAsleep(after: 300))
+        session.since = model.now.addingTimeInterval(-3600)
+        model.live = [session]
+        XCTAssertTrue(model.isAsleep(after: 1800))
+        session.state = .working(tool: nil)
+        model.live = [session]
+        XCTAssertFalse(model.isAsleep(after: 1800))
+    }
+
+    @MainActor
     func testDismissedIdleSessionReturnsForNewWorkAndFreshCompletion() {
         let model = AppModel(agent: .codex, store: SampleStore(samples: []))
         var session = LiveSession(id: id, pid: 1, title: "Old chat", cwd: "/project",

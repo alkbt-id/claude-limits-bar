@@ -48,6 +48,26 @@ enum Snapshot {
             let suffix = appearance == .aqua ? "light" : "dark"
             saveMenuBar(model, appearance: appearance, to: dir.appendingPathComponent("menubar-quiet-\(suffix).png"))
         }
+        // Codex idle: only its seen, idle chats are left. The last one finished minutes ago, so it stays awake
+        // with the gray checkmark; two hours later it sleeps: just its icon with "zᶻ" beside Claude's block.
+        // Both asleep: two dimmed icons, nothing else.
+        func idleOnly(_ m: AppModel, hoursAgo: Double) {
+            m.live = m.live.filter { $0.state == .idle || $0.state == .stopped }.map {
+                var s = $0
+                s.since.addTimeInterval(-hoursAgo * 3600)
+                return s
+            }
+            m.markAllRead()
+        }
+        for (name, step) in [("idle", { idleOnly(codex, hoursAgo: 0) }), ("sleep", { idleOnly(codex, hoursAgo: 2) }),
+                             ("asleep", { idleOnly(model, hoursAgo: 2) })] {
+            step()
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                let suffix = appearance == .aqua ? "light" : "dark"
+                saveMenuBarImage(StatusItemController.image(for: agents), appearance: appearance,
+                                 to: dir.appendingPathComponent("agents-menubar-\(name)-\(suffix).png"))
+            }
+        }
     }
 
     /// Renders a view in a borderless window; `height` nil takes the view's own height.

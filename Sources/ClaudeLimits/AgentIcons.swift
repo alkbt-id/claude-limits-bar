@@ -35,4 +35,19 @@ enum AgentIcons {
             return true
         }
     }
+
+    /// The agent's icon, dimmed, with "zᶻ" over its top right corner; 22 pt tall, the icon 3 pt up as in the awake block.
+    static func sleeping(_ agent: AgentKind) -> NSImage {
+        let icon = image(for: agent)
+        let big = NSAttributedString(string: "z", attributes: [
+            .font: NSFont.systemFont(ofSize: 8, weight: .heavy), .foregroundColor: NSColor.secondaryLabelColor])
+        let small = NSAttributedString(string: "z", attributes: [
+            .font: NSFont.systemFont(ofSize: 6, weight: .heavy), .foregroundColor: NSColor.secondaryLabelColor])
+        return NSImage(size: NSSize(width: 24, height: 22), flipped: false) { _ in
+            icon.draw(in: NSRect(x: 0, y: 3, width: 16, height: 16), from: .zero, operation: .sourceOver, fraction: 0.45)
+            big.draw(at: NSPoint(x: 15, y: 10))
+            small.draw(at: NSPoint(x: 19.5, y: 15))
+            return true
+        }
+    }
 }

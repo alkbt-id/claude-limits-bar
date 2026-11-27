@@ -312,6 +312,14 @@ final class AppModel: ObservableObject {
 
     var attentionCount: Int { live.filter(needsAttention).count }
     var workingCount: Int { live.filter(\.isWorking).count }
+    /// Closed, or nothing works, nobody waits for you and no session changed its state for `idle` seconds:
+    /// the menu bar shows only the agent's sleeping icon.
+    func isAsleep(after idle: TimeInterval) -> Bool {
+        if !isRunning { return true }
+        if workingCount > 0 || attentionCount > 0 { return false }
+        guard let last = live.map(\.since).max() else { return true }
+        return now.timeIntervalSince(last) >= idle
+    }
 
     func markRead(_ ids: [String]) {
         let now = Date()
