@@ -56,6 +56,11 @@ enum Fmt {
         Calendar.current.isDate(d, inSameDayAs: now) ? time.string(from: d) : weekdayTime.string(from: d)
     }
 
+    /// Reset moment for the menu bar, where width is short: "11:49" today, just "Пн" on another day.
+    static func resetDay(_ d: Date, now: Date = Date()) -> String {
+        Calendar.current.isDate(d, inSameDayAs: now) ? time.string(from: d) : weekdayOnly.string(from: d)
+    }
+
     /// Share of a limit with a Russian decimal comma: "18%", "6,8%", "0,4%".
     static func share(_ v: Double) -> String {
         let text = v >= 10 ? "\(Int(v.rounded()))" : String(format: "%.1f", v).replacingOccurrences(of: ".", with: ",")
@@ -94,6 +99,13 @@ enum Fmt {
         let f = DateFormatter()
         f.locale = Locale(identifier: "ru_RU")
         f.dateFormat = "EE HH:mm"
+        return f
+    }()
+
+    static let weekdayOnly: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ru_RU")
+        f.dateFormat = "EE"
         return f
     }()
 

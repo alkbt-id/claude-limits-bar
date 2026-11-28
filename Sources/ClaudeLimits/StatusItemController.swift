@@ -2,7 +2,8 @@ import AppKit
 import SwiftUI
 import Combine
 
-/// Menu bar item: "5ч 42% 11:49" over "7д 8% Пн 20:59" in two small lines, percent colored by how much of the limit is spent.
+/// Menu bar item: "5ч 42% 11:49" over "7д 8% Пн" in two small lines, percent colored by how much of the limit is spent;
+/// a reset on another day shows only its weekday, the exact time is in the panel.
 /// While Claude Code sessions run, a column on the left shows ▶2 (working) over 🔔1 (waiting for you),
 /// or over the number of the rest (idle, already seen) in gray when none waits.
 /// A closed agent, or one with nothing working, nobody waiting and no state change for the time set in the panel
@@ -120,7 +121,7 @@ final class StatusItemController: NSObject {
         let rows = [five, week, fable].compactMap { $0 }
             .map { ($0.0, $0.1?.current(at: model.now), $0.2, $0.3, $0.4) }.map { label, w, length, skip, baseline in
             let color: NSColor = w.map { Palette.nsColor($0.strain(at: model.now, length: length, skipWeekends: skip)) } ?? gray
-            let time = w?.resetsAt.map { Fmt.resetClock($0, now: model.now) } ?? ""
+            let time = w?.resetsAt.map { Fmt.resetDay($0, now: model.now) } ?? ""
             return (NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: gray]),
                     NSAttributedString(string: Fmt.percent(w?.utilization), attributes: [.font: valueFont, .foregroundColor: color]),
                     NSAttributedString(string: time, attributes: [.font: timeFont, .foregroundColor: gray]),
